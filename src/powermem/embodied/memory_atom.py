@@ -226,12 +226,12 @@ class MemoryAtom:
 
         Returns:
             MemoryAtom，spatial 为轨迹起点，temporal 为起止时间区间，
-            embodied_meta 含完整路点列表
+            embodied_meta 含完整路点列表 + 预计算签名（用于快速预过滤）
         """
         if not waypoints:
             return cls(
                 content=content,
-                embodied_meta={"trajectory": {"waypoints": []}},
+                embodied_meta={"trajectory": {"waypoints": [], "signature": [0.0] * 8}},
                 action=MemoryAction.ACT,
                 **kwargs,
             )
@@ -241,11 +241,18 @@ class MemoryAtom:
         for pos, ts in waypoints:
             wp_data.append({"position": pos.to_dict(), "timestamp_sec": ts})
 
+        # 预计算轨迹特征签名，避免查询时从 JSON 重建路点再计算
+        from .trajectory_similarity import trajectory_feature_signature
+        sig = trajectory_feature_signature(waypoints)
+
         meta["trajectory"] = {
             "waypoints": wp_data,
             "duration": waypoints[-1][1] - waypoints[0][1],
             "waypoint_count": len(waypoints),
+            "signature": list(sig),
         }
+        # 标记 physical_type 以便 DB 层快速索引查询（替代慢速 LIKE '%trajectory%'）
+        meta["physical_type"] = "trajectory"
 
         # 空间：轨迹中点（比起点更利于空间索引覆盖）
         mid_idx = len(waypoints) // 2

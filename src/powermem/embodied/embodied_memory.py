@@ -935,11 +935,11 @@ class EmbodiedMemory:
             else:
                 candidate_ids = temporal_ids
 
-        # 如果没有任何粗筛条件，从 DB 拉取所有轨迹记忆（带警告）
+        # 如果没有任何粗筛条件，从 DB 拉取所有轨迹记忆（利用 physical_type 索引）
         if not candidate_ids:
             cursor = self.db_conn.cursor()
             cursor.execute(
-                "SELECT memory_id FROM embodied_memories WHERE embodied_meta LIKE '%trajectory%' LIMIT 1000"
+                "SELECT memory_id FROM embodied_memories WHERE physical_type = 'trajectory' LIMIT 1000"
             )
             candidate_ids = {int(row[0]) for row in cursor.fetchall()}
             if len(candidate_ids) >= 1000:
@@ -959,20 +959,32 @@ class EmbodiedMemory:
             if not traj_meta:
                 continue
 
+            # 优先从 metadata 读取预计算签名（避免 JSON 重建路点的开销）
+            cand_sig_raw = traj_meta.get("signature")
+            if cand_sig_raw is not None:
+                cand_sig = tuple(float(v) for v in cand_sig_raw)
+            else:
+                # 兼容旧数据：从路点重建后计算签名
+                cand_waypoints = []
+                for wp in traj_meta.get("waypoints", []):
+                    pos = wp.get("position")
+                    if pos:
+                        cand_waypoints.append((Vec3.from_dict(pos), wp.get("timestamp_sec", 0.0)))
+                if not cand_waypoints:
+                    continue
+                cand_sig = trajectory_feature_signature(cand_waypoints)
+
+            if not signature_compatible(query_sig, cand_sig):
+                continue
+
+            # 签名通过后，重建路点做精确 DTW
             cand_waypoints = []
             for wp in traj_meta.get("waypoints", []):
                 pos = wp.get("position")
                 if pos:
                     cand_waypoints.append((Vec3.from_dict(pos), wp.get("timestamp_sec", 0.0)))
-
             if not cand_waypoints:
                 continue
-
-            # 签名预过滤
-            cand_sig = trajectory_feature_signature(cand_waypoints)
-            if not signature_compatible(query_sig, cand_sig):
-                continue
-
             cand_positions = [wp[0] for wp in cand_waypoints]
             dtw = dtw_distance_normalized(query_positions, cand_positions)
 

@@ -254,12 +254,17 @@ class TestMemoryAtomTrajectory:
         assert atom.temporal.end_sec == 2.0
         assert atom.embodied_meta["trajectory"]["waypoint_count"] == 3
         assert atom.embodied_meta["trajectory"]["duration"] == 2.0
+        # 签名预计算
+        assert "signature" in atom.embodied_meta["trajectory"]
+        assert len(atom.embodied_meta["trajectory"]["signature"]) == 8
+        assert atom.embodied_meta["physical_type"] == "trajectory"
 
     def test_empty_trajectory(self):
         atom = MemoryAtom.from_trajectory("no movement", [])
         assert atom.spatial is None
         assert atom.temporal is None
         assert atom.embodied_meta["trajectory"]["waypoints"] == []
+        assert atom.embodied_meta["trajectory"]["signature"] == [0.0] * 8
 
     def test_trajectory_roundtrip(self):
         waypoints = [(Vec3(0, 1, 2), 0.5), (Vec3(3, 4, 5), 1.5)]
@@ -270,6 +275,9 @@ class TestMemoryAtomTrajectory:
         assert traj["waypoint_count"] == 2
         assert traj["waypoints"][0]["position"] == {"x": 0, "y": 1, "z": 2}
         assert restored.temporal.start_sec == 0.5
+        # 签名在 roundtrip 后保持
+        assert "signature" in traj
+        assert len(traj["signature"]) == 8
 
 
 # ---------------------------------------------------------------------------
