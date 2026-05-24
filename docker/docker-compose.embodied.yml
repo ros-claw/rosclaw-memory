@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  rosclaw-embodied:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.embodied
+    image: rosclaw-memory:embodied
+    container_name: rosclaw-embodied
+    ports:
+      - "50051:50051"
+    environment:
+      - DATABASE_PROVIDER=sqlite
+      - EMBODIED_DB_PATH=/data/embodied.db
+    volumes:
+      - embodied_data:/data
+    command:
+      - powermem-embodied-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "50051"
+      - --db-path
+      - /data/embodied.db
+      - --log-level
+      - INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 50051)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  embodied_data:

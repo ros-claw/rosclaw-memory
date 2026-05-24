@@ -18,6 +18,18 @@ message TemporalInterval {
   string frame_id = 3;
 }
 
+message Quaternion {
+  double w = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+}
+
+message Pose {
+  Vec3 position = 1;
+  Quaternion orientation = 2;
+}
+
 message SensorFrame {
   string modality = 1;
   double timestamp_sec = 2;
@@ -246,6 +258,69 @@ message GetEffectsResponse {
 }
 
 // ============================================================================
+// World Objects
+// ============================================================================
+
+message WorldObjectPayload {
+  string obj_id = 1;
+  string obj_type = 2;
+  string name = 3;
+  Pose pose = 4;
+  repeated double size = 5;
+  repeated double color = 6;
+  string mesh_path = 7;
+  string physics_props_json = 8;
+  repeated string semantic_tags = 9;
+  string scene_id = 10;
+  string parent_obj_id = 11;
+  string state = 12;
+  int64 memory_id = 13;
+}
+
+message SpatialRelationPayload {
+  string subject_id = 1;
+  string object_id = 2;
+  string relation = 3;
+  double confidence = 4;
+}
+
+message AddWorldObjectRequest { WorldObjectPayload obj = 1; }
+message AddWorldObjectResponse { string obj_id = 1; bool success = 2; }
+
+message GetWorldObjectRequest { string obj_id = 1; }
+message GetWorldObjectResponse { WorldObjectPayload obj = 1; bool found = 2; }
+
+message UpdateWorldObjectPoseRequest {
+  string obj_id = 1;
+  Pose pose = 2;
+  string state = 3;
+}
+message UpdateWorldObjectPoseResponse { bool success = 1; }
+
+message SearchWorldObjectsRequest {
+  Vec3 center = 1;
+  double radius = 2;
+  string obj_type = 3;
+  string scene_id = 4;
+  int32 limit = 5;
+}
+message SearchWorldObjectsResponse { repeated WorldObjectPayload objects = 1; }
+
+message GetSceneGraphRequest { string scene_id = 1; }
+message GetSceneGraphResponse {
+  repeated WorldObjectPayload objects = 1;
+  repeated SpatialRelationPayload relations = 2;
+}
+
+message ComputeRelationsRequest {
+  string scene_id = 1;
+  double spatial_tolerance = 2;
+}
+message ComputeRelationsResponse {
+  repeated SpatialRelationPayload relations = 1;
+}
+
+// ============================================================================
 // Stats
 // ============================================================================
 
@@ -278,6 +353,13 @@ service EmbodiedMemoryService {
 
   rpc GetCauses(GetCausesRequest) returns (GetCausesResponse);
   rpc GetEffects(GetEffectsRequest) returns (GetEffectsResponse);
+
+  rpc AddWorldObject(AddWorldObjectRequest) returns (AddWorldObjectResponse);
+  rpc GetWorldObject(GetWorldObjectRequest) returns (GetWorldObjectResponse);
+  rpc UpdateWorldObjectPose(UpdateWorldObjectPoseRequest) returns (UpdateWorldObjectPoseResponse);
+  rpc SearchWorldObjects(SearchWorldObjectsRequest) returns (SearchWorldObjectsResponse);
+  rpc GetSceneGraph(GetSceneGraphRequest) returns (GetSceneGraphResponse);
+  rpc ComputeRelations(ComputeRelationsRequest) returns (ComputeRelationsResponse);
 
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
 }

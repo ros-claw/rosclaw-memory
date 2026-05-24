@@ -15,7 +15,7 @@ from powermem.embodied.proto import embodied_memory_pb2
 from powermem.embodied.proto import embodied_memory_pb2_grpc
 
 from ..memory_atom import MemoryAtom
-from ..types import TemporalInterval, Vec3
+from ..types import Pose, SpatialRelation, TemporalInterval, Vec3, WorldObject
 
 
 class EmbodiedMemoryClient:
@@ -162,6 +162,77 @@ class EmbodiedMemoryClient:
         from .servicer import _pb_atom_to_py
 
         return [(_pb_atom_to_py(r.atom), r.dtw_distance) for r in resp.results]
+
+    # -----------------------------------------------------------------------
+    # World Objects
+    # -----------------------------------------------------------------------
+
+    def add_world_object(self, obj: WorldObject) -> str:
+        from .servicer import _py_world_object_to_pb
+
+        req = embodied_memory_pb2.AddWorldObjectRequest(obj=_py_world_object_to_pb(obj))
+        resp = self.stub.AddWorldObject(req)
+        return resp.obj_id
+
+    def get_world_object(self, obj_id: str) -> Optional[WorldObject]:
+        from .servicer import _pb_world_object_to_py
+
+        req = embodied_memory_pb2.GetWorldObjectRequest(obj_id=obj_id)
+        resp = self.stub.GetWorldObject(req)
+        if not resp.found:
+            return None
+        return _pb_world_object_to_py(resp.obj)
+
+    def update_world_object_pose(self, obj_id: str, pose: Pose, state: Optional[str] = None) -> bool:
+        from .servicer import _py_pose_to_pb
+
+        req = embodied_memory_pb2.UpdateWorldObjectPoseRequest(obj_id=obj_id)
+        req.pose.CopyFrom(_py_pose_to_pb(pose))
+        if state is not None:
+            req.state = state
+        resp = self.stub.UpdateWorldObjectPose(req)
+        return resp.success
+
+    def search_world_objects(
+        self,
+        center: Vec3,
+        radius: float,
+        obj_type: Optional[str] = None,
+        scene_id: Optional[str] = None,
+        limit: int = 30,
+    ) -> List[WorldObject]:
+        from .servicer import _pb_world_object_to_py, _py_vec3_to_pb
+
+        req = embodied_memory_pb2.SearchWorldObjectsRequest(
+            center=_py_vec3_to_pb(center),
+            radius=radius,
+            limit=limit,
+        )
+        if obj_type is not None:
+            req.obj_type = obj_type
+        if scene_id is not None:
+            req.scene_id = scene_id
+        resp = self.stub.SearchWorldObjects(req)
+        return [_pb_world_object_to_py(o) for o in resp.objects]
+
+    def get_scene_graph(self, scene_id: str) -> Tuple[List[WorldObject], List[SpatialRelation]]:
+        from .servicer import _pb_spatial_relation_to_py, _pb_world_object_to_py
+
+        req = embodied_memory_pb2.GetSceneGraphRequest(scene_id=scene_id)
+        resp = self.stub.GetSceneGraph(req)
+        objects = [_pb_world_object_to_py(o) for o in resp.objects]
+        relations = [_pb_spatial_relation_to_py(r) for r in resp.relations]
+        return objects, relations
+
+    def compute_relations(self, scene_id: str, spatial_tolerance: float = 0.01) -> List[SpatialRelation]:
+        from .servicer import _pb_spatial_relation_to_py
+
+        req = embodied_memory_pb2.ComputeRelationsRequest(
+            scene_id=scene_id,
+            spatial_tolerance=spatial_tolerance,
+        )
+        resp = self.stub.ComputeRelations(req)
+        return [_pb_spatial_relation_to_py(r) for r in resp.relations]
 
     # -----------------------------------------------------------------------
     # Stats

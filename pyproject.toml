@@ -108,6 +108,7 @@ server = ["dashboard/**"]
 powermem-server = "server.cli.server:server"
 pmem = "powermem.cli.main:cli"
 powermem-cli = "powermem.cli.main:cli"
+powermem-embodied-server = "powermem.embodied.grpc.cli:embodied_server"
 
 [tool.black]
 line-length = 88

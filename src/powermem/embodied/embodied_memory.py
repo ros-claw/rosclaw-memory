@@ -24,6 +24,7 @@ from .ingest_pipeline import IngestPipeline, SensorFrame
 from .memory_atom import MemoryAtom
 from .model_store import ModelStore
 from .schema import initialize_embodied_schema
+from .scene_graph import SceneGraph
 from .spatial_index import SpatialIndex
 from .surprisal_gate import SurprisalGate
 from .temporal_index import TemporalIndex
@@ -32,7 +33,8 @@ from .trajectory_similarity import (
     signature_compatible,
     trajectory_feature_signature,
 )
-from .types import IntervalRelation, TemporalInterval, Vec3
+from .types import IntervalRelation, MemoryAction, Pose, Quaternion, SpatialRelation, TemporalInterval, Vec3, WorldObject
+from .world_object_store import WorldObjectStore
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,9 @@ class EmbodiedMemory:
 
         # 物理模型存储
         self.model_store = ModelStore(db_conn)
+
+        # 世界对象存储
+        self.world_object_store = WorldObjectStore(db_conn)
 
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
@@ -547,58 +552,212 @@ class EmbodiedMemory:
     # 世界对象记忆
     # ========================================================================
 
-    def add_world_objects(self, parse_result: "ParseResult") -> List[int]:
-        """将 ParseResult 中的 world_objects 批量存储为 MemoryAtom
+    def add_world_object(self, obj: WorldObject) -> str:
+        """存储一个 WorldObject，同时创建 MemoryAtom 用于 PowerMem 索引
+
+        Args:
+            obj: 世界对象
+
+        Returns:
+            obj_id
+        """
+        # 1. 创建 MemoryAtom（用于语义/向量检索）
+        content = f"World object: {obj.name} ({obj.obj_type})"
+        atom = MemoryAtom(
+            content=content,
+            spatial=obj.pose.position,
+            spatial_frame_id="world",
+            action=MemoryAction.OBSERVE,
+            embodied_meta={
+                "physical_type": "world_object",
+                "world_object": obj.to_dict(),
+            },
+        )
+        mid = self.add_atom(atom)
+
+        # 2. 更新 memory_id 链接并写入 WorldObjectStore
+        obj = WorldObject(
+            obj_id=obj.obj_id,
+            obj_type=obj.obj_type,
+            name=obj.name,
+            pose=obj.pose,
+            size=obj.size,
+            color=obj.color,
+            mesh_path=obj.mesh_path,
+            physics_props=obj.physics_props,
+            semantic_tags=obj.semantic_tags,
+            scene_id=obj.scene_id,
+            parent_obj_id=obj.parent_obj_id,
+            state=obj.state,
+            memory_id=mid,
+        )
+        self.world_object_store.save(obj)
+        return obj.obj_id
+
+    def add_world_objects(self, parse_result: "ParseResult") -> List[str]:
+        """将 ParseResult 中的 world_objects 批量存储
 
         Args:
             parse_result: 解析结果，含 world_objects 列表
 
         Returns:
-            所有新增的 memory_id 列表
+            所有新增的 obj_id 列表
         """
-        ids: List[int] = []
-        for obj in parse_result.world_objects:
-            name = obj.get("name", "unknown_object")
-            obj_type = obj.get("type", "unknown")
-            content = f"World object: {name} ({obj_type})"
-            atom = MemoryAtom.from_world_object(content=content, obj=obj)
-            mid = self.add_atom(atom)
-            ids.append(mid)
+        ids: List[str] = []
+        for raw in parse_result.world_objects:
+            obj = self._parse_dict_to_world_object(raw)
+            oid = self.add_world_object(obj)
+            ids.append(oid)
         return ids
+
+    def _parse_dict_to_world_object(self, raw: Dict[str, Any]) -> WorldObject:
+        """将解析器输出的 dict 转为 WorldObject"""
+        pose_raw = raw.get("pose", {})
+        pos_raw = pose_raw.get("position", {}) if isinstance(pose_raw, dict) else {}
+        ori_raw = pose_raw.get("orientation", {}) if isinstance(pose_raw, dict) else {}
+        return WorldObject(
+            obj_id=raw.get("id") or raw.get("name", "unknown"),
+            obj_type=raw.get("type", "unknown"),
+            name=raw.get("name", ""),
+            pose=Pose(
+                position=Vec3(
+                    float(pos_raw.get("x", 0)),
+                    float(pos_raw.get("y", 0)),
+                    float(pos_raw.get("z", 0)),
+                ),
+                orientation=Quaternion(
+                    float(ori_raw.get("w", 1)),
+                    float(ori_raw.get("x", 0)),
+                    float(ori_raw.get("y", 0)),
+                    float(ori_raw.get("z", 0)),
+                ),
+            ),
+            size=tuple(raw["size"]) if raw.get("size") else None,
+            color=tuple(raw["color"]) if raw.get("color") else None,
+            mesh_path=raw.get("mesh_path"),
+            physics_props=raw.get("physics_props", {}),
+            semantic_tags=raw.get("semantic_tags", []),
+            scene_id=raw.get("scene_id"),
+            parent_obj_id=raw.get("parent_obj_id"),
+        )
+
+    def get_world_object(self, obj_id: str) -> Optional[WorldObject]:
+        """按 obj_id 读取 WorldObject"""
+        return self.world_object_store.load(obj_id)
+
+    def update_world_object_pose(
+        self,
+        obj_id: str,
+        pose: Pose,
+        state: Optional[str] = None,
+    ) -> bool:
+        """更新对象位姿，并记录变化历史为新的 MemoryAtom
+
+        Args:
+            obj_id: 对象 ID
+            pose: 新位姿
+            state: 可选新状态
+
+        Returns:
+            是否成功
+        """
+        obj = self.world_object_store.load(obj_id)
+        if obj is None:
+            return False
+
+        # 更新 store
+        ok = self.world_object_store.update_pose(obj_id, pose, state)
+        if not ok:
+            return False
+
+        # 记录变化事件
+        content = f"Object {obj.name} moved to ({pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f})"
+        if state:
+            content += f" [{state}]"
+        atom = MemoryAtom(
+            content=content,
+            spatial=pose.position,
+            spatial_frame_id="world",
+            action=MemoryAction.OBSERVE,
+            embodied_meta={
+                "physical_type": "world_object_change",
+                "world_object_id": obj_id,
+                "world_object": obj.to_dict(),
+            },
+        )
+        self.add_atom(atom)
+        return True
 
     def search_world_objects(
         self,
         center: Vec3,
         radius: float,
         obj_type: Optional[str] = None,
+        scene_id: Optional[str] = None,
         limit: int = 30,
-    ) -> List[MemoryAtom]:
+    ) -> List[WorldObject]:
         """搜索指定空间区域内的世界对象
+
+        优先使用 WorldObjectStore 的结构化数据，回退到 spatial_index 粗筛。
 
         Args:
             center: 查询中心
             radius: 查询半径（米）
-            obj_type: 可选过滤对象类型（如 "box", "sphere", "mesh"）
+            obj_type: 可选过滤对象类型
+            scene_id: 可选过滤场景
             limit: 最大返回数
 
         Returns:
-            MemoryAtom 列表
+            WorldObject 列表（按距离排序）
         """
+        # 如果指定了 scene_id，优先用 store 的列表 + 距离过滤
+        if scene_id is not None:
+            candidates = self.world_object_store.list_by_scene(scene_id, obj_type=obj_type, limit=limit * 3)
+            results = []
+            for obj in candidates:
+                dist = center.distance_to(obj.pose.position)
+                if dist <= radius:
+                    results.append((obj, dist))
+            results.sort(key=lambda x: x[1])
+            return [o for o, _ in results[:limit]]
+
+        # 否则用 spatial_index 粗筛
         hits = self.spatial_index.query_radius(center, radius, limit=limit * 3)
-        atoms: List[MemoryAtom] = []
+        results = []
         for mid, dist in hits:
             atom = self.get_atom(mid)
             if atom is None:
                 continue
-            if atom.embodied_meta.get("physical_type") != "world_object":
+            wo_dict = atom.embodied_meta.get("world_object", {})
+            oid = wo_dict.get("obj_id")
+            if oid is None:
                 continue
-            if obj_type is not None:
-                wo = atom.embodied_meta.get("world_object", {})
-                if wo.get("type") != obj_type:
-                    continue
-            atom.embodied_meta["_spatial_distance"] = dist
-            atoms.append(atom)
-        return atoms[:limit]
+            obj = self.world_object_store.load(oid)
+            if obj is None:
+                continue
+            if obj_type is not None and obj.obj_type != obj_type:
+                continue
+            results.append((obj, dist))
+        results.sort(key=lambda x: x[1])
+        return [o for o, _ in results[:limit]]
+
+    def get_scene_graph(self, scene_id: str) -> SceneGraph:
+        """获取场景图"""
+        sg = SceneGraph(scene_id, self.world_object_store)
+        sg.build()
+        return sg
+
+    def auto_compute_relations(
+        self,
+        scene_id: str,
+        spatial_tolerance: float = 0.01,
+    ) -> List[SpatialRelation]:
+        """自动计算场景内的空间关系"""
+        sg = self.get_scene_graph(scene_id)
+        relations = sg.compute_relations(spatial_tolerance)
+        for rel in relations:
+            self.world_object_store.add_relation(rel)
+        return relations
 
     # ========================================================================
     # 轨迹记忆

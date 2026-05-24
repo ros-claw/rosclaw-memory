@@ -103,6 +103,36 @@ class EmbodiedMemoryServiceStub(object):
                 request_serializer=embodied__memory__pb2.GetEffectsRequest.SerializeToString,
                 response_deserializer=embodied__memory__pb2.GetEffectsResponse.FromString,
                 _registered_method=True)
+        self.AddWorldObject = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/AddWorldObject',
+                request_serializer=embodied__memory__pb2.AddWorldObjectRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.AddWorldObjectResponse.FromString,
+                _registered_method=True)
+        self.GetWorldObject = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/GetWorldObject',
+                request_serializer=embodied__memory__pb2.GetWorldObjectRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.GetWorldObjectResponse.FromString,
+                _registered_method=True)
+        self.UpdateWorldObjectPose = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/UpdateWorldObjectPose',
+                request_serializer=embodied__memory__pb2.UpdateWorldObjectPoseRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.UpdateWorldObjectPoseResponse.FromString,
+                _registered_method=True)
+        self.SearchWorldObjects = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/SearchWorldObjects',
+                request_serializer=embodied__memory__pb2.SearchWorldObjectsRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.SearchWorldObjectsResponse.FromString,
+                _registered_method=True)
+        self.GetSceneGraph = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/GetSceneGraph',
+                request_serializer=embodied__memory__pb2.GetSceneGraphRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.GetSceneGraphResponse.FromString,
+                _registered_method=True)
+        self.ComputeRelations = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/ComputeRelations',
+                request_serializer=embodied__memory__pb2.ComputeRelationsRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.ComputeRelationsResponse.FromString,
+                _registered_method=True)
         self.GetStats = channel.unary_unary(
                 '/powermem.embodied.EmbodiedMemoryService/GetStats',
                 request_serializer=embodied__memory__pb2.GetStatsRequest.SerializeToString,
@@ -195,6 +225,42 @@ class EmbodiedMemoryServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AddWorldObject(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetWorldObject(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateWorldObjectPose(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SearchWorldObjects(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetSceneGraph(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ComputeRelations(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetStats(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -268,6 +334,36 @@ def add_EmbodiedMemoryServiceServicer_to_server(servicer, server):
                     servicer.GetEffects,
                     request_deserializer=embodied__memory__pb2.GetEffectsRequest.FromString,
                     response_serializer=embodied__memory__pb2.GetEffectsResponse.SerializeToString,
+            ),
+            'AddWorldObject': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddWorldObject,
+                    request_deserializer=embodied__memory__pb2.AddWorldObjectRequest.FromString,
+                    response_serializer=embodied__memory__pb2.AddWorldObjectResponse.SerializeToString,
+            ),
+            'GetWorldObject': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetWorldObject,
+                    request_deserializer=embodied__memory__pb2.GetWorldObjectRequest.FromString,
+                    response_serializer=embodied__memory__pb2.GetWorldObjectResponse.SerializeToString,
+            ),
+            'UpdateWorldObjectPose': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateWorldObjectPose,
+                    request_deserializer=embodied__memory__pb2.UpdateWorldObjectPoseRequest.FromString,
+                    response_serializer=embodied__memory__pb2.UpdateWorldObjectPoseResponse.SerializeToString,
+            ),
+            'SearchWorldObjects': grpc.unary_unary_rpc_method_handler(
+                    servicer.SearchWorldObjects,
+                    request_deserializer=embodied__memory__pb2.SearchWorldObjectsRequest.FromString,
+                    response_serializer=embodied__memory__pb2.SearchWorldObjectsResponse.SerializeToString,
+            ),
+            'GetSceneGraph': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSceneGraph,
+                    request_deserializer=embodied__memory__pb2.GetSceneGraphRequest.FromString,
+                    response_serializer=embodied__memory__pb2.GetSceneGraphResponse.SerializeToString,
+            ),
+            'ComputeRelations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ComputeRelations,
+                    request_deserializer=embodied__memory__pb2.ComputeRelationsRequest.FromString,
+                    response_serializer=embodied__memory__pb2.ComputeRelationsResponse.SerializeToString,
             ),
             'GetStats': grpc.unary_unary_rpc_method_handler(
                     servicer.GetStats,
@@ -630,6 +726,168 @@ class EmbodiedMemoryService(object):
             '/powermem.embodied.EmbodiedMemoryService/GetEffects',
             embodied__memory__pb2.GetEffectsRequest.SerializeToString,
             embodied__memory__pb2.GetEffectsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddWorldObject(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/AddWorldObject',
+            embodied__memory__pb2.AddWorldObjectRequest.SerializeToString,
+            embodied__memory__pb2.AddWorldObjectResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetWorldObject(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/GetWorldObject',
+            embodied__memory__pb2.GetWorldObjectRequest.SerializeToString,
+            embodied__memory__pb2.GetWorldObjectResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateWorldObjectPose(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/UpdateWorldObjectPose',
+            embodied__memory__pb2.UpdateWorldObjectPoseRequest.SerializeToString,
+            embodied__memory__pb2.UpdateWorldObjectPoseResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SearchWorldObjects(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/SearchWorldObjects',
+            embodied__memory__pb2.SearchWorldObjectsRequest.SerializeToString,
+            embodied__memory__pb2.SearchWorldObjectsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetSceneGraph(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/GetSceneGraph',
+            embodied__memory__pb2.GetSceneGraphRequest.SerializeToString,
+            embodied__memory__pb2.GetSceneGraphResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ComputeRelations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/ComputeRelations',
+            embodied__memory__pb2.ComputeRelationsRequest.SerializeToString,
+            embodied__memory__pb2.ComputeRelationsResponse.FromString,
             options,
             channel_credentials,
             insecure,

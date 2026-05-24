@@ -19,7 +19,7 @@ from powermem.embodied.proto import embodied_memory_pb2_grpc
 
 from ..embodied_memory import EmbodiedMemory
 from ..memory_atom import MemoryAtom
-from ..types import IntervalRelation, MemoryAction, Modality, TemporalInterval, Vec3
+from ..types import IntervalRelation, MemoryAction, Modality, Pose, Quaternion, SpatialRelation, TemporalInterval, Vec3, WorldObject
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,95 @@ def _pb_relation_to_py(relation_str: str) -> Optional[IntervalRelation]:
         return IntervalRelation(relation_str)
     except ValueError:
         return None
+
+
+def _pb_pose_to_py(pb_pose: embodied_memory_pb2.Pose) -> Pose:
+    return Pose(
+        position=_pb_vec3_to_py(pb_pose.position),
+        orientation=Quaternion(
+            w=pb_pose.orientation.w,
+            x=pb_pose.orientation.x,
+            y=pb_pose.orientation.y,
+            z=pb_pose.orientation.z,
+        ),
+    )
+
+
+def _py_pose_to_pb(pose: Pose) -> embodied_memory_pb2.Pose:
+    return embodied_memory_pb2.Pose(
+        position=_py_vec3_to_pb(pose.position),
+        orientation=embodied_memory_pb2.Quaternion(
+            w=pose.orientation.w,
+            x=pose.orientation.x,
+            y=pose.orientation.y,
+            z=pose.orientation.z,
+        ),
+    )
+
+
+def _pb_world_object_to_py(pb: embodied_memory_pb2.WorldObjectPayload) -> WorldObject:
+    size = tuple(pb.size) if pb.size else None
+    color = tuple(pb.color) if pb.color else None
+    return WorldObject(
+        obj_id=pb.obj_id,
+        obj_type=pb.obj_type or "box",
+        name=pb.name,
+        pose=_pb_pose_to_py(pb.pose) if pb.HasField("pose") else Pose(),
+        size=size,
+        color=color,
+        mesh_path=pb.mesh_path if pb.mesh_path else None,
+        physics_props=json.loads(pb.physics_props_json) if pb.physics_props_json else {},
+        semantic_tags=list(pb.semantic_tags),
+        scene_id=pb.scene_id if pb.scene_id else None,
+        parent_obj_id=pb.parent_obj_id if pb.parent_obj_id else None,
+        state=pb.state or "present",
+        memory_id=pb.memory_id if pb.memory_id else None,
+    )
+
+
+def _py_world_object_to_pb(obj: WorldObject) -> embodied_memory_pb2.WorldObjectPayload:
+    pb = embodied_memory_pb2.WorldObjectPayload(
+        obj_id=obj.obj_id,
+        obj_type=obj.obj_type,
+        name=obj.name,
+        state=obj.state,
+        semantic_tags=obj.semantic_tags,
+    )
+    if obj.pose is not None:
+        pb.pose.CopyFrom(_py_pose_to_pb(obj.pose))
+    if obj.size is not None:
+        pb.size.extend(obj.size)
+    if obj.color is not None:
+        pb.color.extend(obj.color)
+    if obj.mesh_path is not None:
+        pb.mesh_path = obj.mesh_path
+    if obj.physics_props:
+        pb.physics_props_json = json.dumps(obj.physics_props)
+    if obj.scene_id is not None:
+        pb.scene_id = obj.scene_id
+    if obj.parent_obj_id is not None:
+        pb.parent_obj_id = obj.parent_obj_id
+    if obj.memory_id is not None:
+        pb.memory_id = obj.memory_id
+    return pb
+
+
+def _py_spatial_relation_to_pb(rel: SpatialRelation) -> embodied_memory_pb2.SpatialRelationPayload:
+    return embodied_memory_pb2.SpatialRelationPayload(
+        subject_id=rel.subject_id,
+        object_id=rel.object_id,
+        relation=rel.relation,
+        confidence=rel.confidence,
+    )
+
+
+def _pb_spatial_relation_to_py(pb: embodied_memory_pb2.SpatialRelationPayload) -> SpatialRelation:
+    return SpatialRelation(
+        subject_id=pb.subject_id,
+        object_id=pb.object_id,
+        relation=pb.relation,
+        confidence=pb.confidence,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +473,72 @@ class EmbodiedMemoryServicer(embodied_memory_pb2_grpc.EmbodiedMemoryServiceServi
             atoms = self.em.get_effects(request.memory_id, limit=request.limit or 10)
             return embodied_memory_pb2.GetEffectsResponse(
                 atoms=[_py_atom_to_pb(a) for a in atoms]
+            )
+        return self._handle(context, _do)
+
+    # -----------------------------------------------------------------------
+    # World Objects
+    # -----------------------------------------------------------------------
+
+    def AddWorldObject(self, request, context):
+        def _do():
+            obj = _pb_world_object_to_py(request.obj)
+            obj_id = self.em.add_world_object(obj)
+            return embodied_memory_pb2.AddWorldObjectResponse(obj_id=obj_id, success=True)
+        return self._handle(context, _do)
+
+    def GetWorldObject(self, request, context):
+        def _do():
+            obj = self.em.get_world_object(request.obj_id)
+            if obj is None:
+                return embodied_memory_pb2.GetWorldObjectResponse(found=False)
+            return embodied_memory_pb2.GetWorldObjectResponse(
+                obj=_py_world_object_to_pb(obj), found=True
+            )
+        return self._handle(context, _do)
+
+    def UpdateWorldObjectPose(self, request, context):
+        def _do():
+            pose = _pb_pose_to_py(request.pose) if request.HasField("pose") else None
+            state = request.state if request.state else None
+            ok = self.em.update_world_object_pose(
+                request.obj_id, pose=pose, state=state
+            ) if pose else False
+            return embodied_memory_pb2.UpdateWorldObjectPoseResponse(success=ok)
+        return self._handle(context, _do)
+
+    def SearchWorldObjects(self, request, context):
+        def _do():
+            center = _pb_vec3_to_py(request.center)
+            objects = self.em.search_world_objects(
+                center=center,
+                radius=request.radius,
+                obj_type=request.obj_type or None,
+                scene_id=request.scene_id or None,
+                limit=request.limit or 30,
+            )
+            return embodied_memory_pb2.SearchWorldObjectsResponse(
+                objects=[_py_world_object_to_pb(o) for o in objects]
+            )
+        return self._handle(context, _do)
+
+    def GetSceneGraph(self, request, context):
+        def _do():
+            sg = self.em.get_scene_graph(request.scene_id)
+            return embodied_memory_pb2.GetSceneGraphResponse(
+                objects=[_py_world_object_to_pb(o) for o in sg.get_objects()],
+                relations=[_py_spatial_relation_to_pb(r) for r in sg._relations],
+            )
+        return self._handle(context, _do)
+
+    def ComputeRelations(self, request, context):
+        def _do():
+            relations = self.em.auto_compute_relations(
+                request.scene_id,
+                spatial_tolerance=request.spatial_tolerance or 0.01,
+            )
+            return embodied_memory_pb2.ComputeRelationsResponse(
+                relations=[_py_spatial_relation_to_pb(r) for r in relations]
             )
         return self._handle(context, _do)
 

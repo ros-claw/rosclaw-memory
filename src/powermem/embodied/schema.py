@@ -144,6 +144,65 @@ CREATE TABLE IF NOT EXISTS embodied_predictive_state (
 )
 """
 
+# --- 世界对象表（物体身份追踪 + 场景图） ---
+
+_WORLD_OBJECTS_DDL = """
+CREATE TABLE IF NOT EXISTS embodied_world_objects (
+    obj_id              VARCHAR(128) PRIMARY KEY,
+    obj_type            VARCHAR(32),
+    name                VARCHAR(128),
+    pos_x               DOUBLE,
+    pos_y               DOUBLE,
+    pos_z               DOUBLE,
+    orient_w            DOUBLE,
+    orient_x            DOUBLE,
+    orient_y            DOUBLE,
+    orient_z            DOUBLE,
+    size_json           TEXT,
+    color_json          TEXT,
+    mesh_path           VARCHAR(256),
+    physics_props_json  TEXT,
+    semantic_tags_json  TEXT,
+    scene_id            VARCHAR(128),
+    parent_obj_id       VARCHAR(128),
+    state               VARCHAR(32) DEFAULT 'present',
+    memory_id           BIGINT,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (memory_id) REFERENCES embodied_memories(memory_id) ON DELETE SET NULL
+)
+"""
+
+_WORLD_OBJECT_INDEXES: List[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_wo_scene ON embodied_world_objects(scene_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wo_parent ON embodied_world_objects(parent_obj_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wo_type ON embodied_world_objects(obj_type)",
+    "CREATE INDEX IF NOT EXISTS idx_wo_state ON embodied_world_objects(state)",
+    "CREATE INDEX IF NOT EXISTS idx_wo_memory ON embodied_world_objects(memory_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wo_pos ON embodied_world_objects(pos_x, pos_y, pos_z)",
+]
+
+# --- 空间关系表（场景图边） ---
+
+_SPATIAL_RELATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS embodied_spatial_relations (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    subject_id  VARCHAR(128) NOT NULL,
+    object_id   VARCHAR(128) NOT NULL,
+    relation    VARCHAR(32) NOT NULL,
+    confidence  DOUBLE DEFAULT 1.0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (subject_id) REFERENCES embodied_world_objects(obj_id) ON DELETE CASCADE,
+    FOREIGN KEY (object_id) REFERENCES embodied_world_objects(obj_id) ON DELETE CASCADE
+)
+"""
+
+_SPATIAL_RELATION_INDEXES: List[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_rel_subject ON embodied_spatial_relations(subject_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rel_object ON embodied_spatial_relations(object_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rel_pair ON embodied_spatial_relations(subject_id, object_id)",
+]
+
 # --- 物理模型库表（机器人/环境骨架） ---
 
 _PHYSICAL_MODELS_DDL = """
@@ -177,10 +236,20 @@ ALL_DDL = [
     _EMBODIED_MEMORIES_DDL,
     _CAUSAL_EDGES_DDL,
     _PREDICTIVE_STATE_DDL,
+    _WORLD_OBJECTS_DDL,
+    _SPATIAL_RELATIONS_DDL,
     _PHYSICAL_MODELS_DDL,
 ]
 
-ALL_INDEXES = _SPATIAL_INDEXES + _TEMPORAL_INDEXES + _SEMANTIC_INDEXES + _CAUSAL_INDEXES + _PHYSICAL_MODEL_INDEXES
+ALL_INDEXES = (
+    _SPATIAL_INDEXES
+    + _TEMPORAL_INDEXES
+    + _SEMANTIC_INDEXES
+    + _CAUSAL_INDEXES
+    + _WORLD_OBJECT_INDEXES
+    + _SPATIAL_RELATION_INDEXES
+    + _PHYSICAL_MODEL_INDEXES
+)
 
 
 def initialize_embodied_schema(conn) -> None:
@@ -258,6 +327,20 @@ def get_dialect_ddl(dialect: str = "seekdb") -> tuple[List[str], List[str]]:
             .replace("ON UPDATE CURRENT_TIMESTAMP", "")
             .replace("VARCHAR(128)", "TEXT")
             .replace("INT", "INTEGER")
+            .replace("DOUBLE", "REAL"),
+            _WORLD_OBJECTS_DDL
+            .replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))")
+            .replace("ON UPDATE CURRENT_TIMESTAMP", "")
+            .replace("VARCHAR(128)", "TEXT")
+            .replace("VARCHAR(32)", "TEXT")
+            .replace("VARCHAR(256)", "TEXT")
+            .replace("BIGINT", "INTEGER")
+            .replace("DOUBLE", "REAL"),
+            _SPATIAL_RELATIONS_DDL
+            .replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))")
+            .replace("BIGINT AUTO_INCREMENT PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+            .replace("VARCHAR(128)", "TEXT")
+            .replace("VARCHAR(32)", "TEXT")
             .replace("DOUBLE", "REAL"),
             _PHYSICAL_MODELS_DDL
             .replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))")

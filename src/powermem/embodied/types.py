@@ -346,6 +346,91 @@ class MemoryAction(Enum):
 
 
 # ---------------------------------------------------------------------------
+# 世界对象与空间关系
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class WorldObject:
+    """世界对象 —— 物理环境中可感知、可交互的实体"""
+    obj_id: str
+    obj_type: str = "box"           # box | sphere | cylinder | capsule | mesh
+    name: str = ""
+    pose: Pose = field(default_factory=Pose)
+    size: Optional[Tuple[float, ...]] = None       # [w, h, d] or [radius]
+    color: Optional[Tuple[float, ...]] = None      # [r, g, b, a]
+    mesh_path: Optional[str] = None
+    physics_props: Dict[str, Any] = field(default_factory=dict)   # mass, friction, restitution
+    semantic_tags: List[str] = field(default_factory=list)        # ["graspable", "furniture"]
+    scene_id: Optional[str] = None
+    parent_obj_id: Optional[str] = None            # scene graph parent
+    state: str = "present"                          # present | moved | removed | occluded
+    memory_id: Optional[int] = None                # link to embodied_memories
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "obj_id": self.obj_id,
+            "obj_type": self.obj_type,
+            "name": self.name,
+            "pose": self.pose.to_dict(),
+            "size": list(self.size) if self.size else [],
+            "color": list(self.color) if self.color else [],
+            "mesh_path": self.mesh_path,
+            "physics_props": self.physics_props,
+            "semantic_tags": self.semantic_tags,
+            "scene_id": self.scene_id,
+            "parent_obj_id": self.parent_obj_id,
+            "state": self.state,
+            "memory_id": self.memory_id,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> WorldObject:
+        size = d.get("size", [])
+        color = d.get("color", [])
+        return cls(
+            obj_id=str(d["obj_id"]),
+            obj_type=str(d.get("obj_type", "box")),
+            name=str(d.get("name", "")),
+            pose=Pose.from_dict(d.get("pose", {})),
+            size=tuple(size) if size else None,
+            color=tuple(color) if color else None,
+            mesh_path=d.get("mesh_path") if d.get("mesh_path") else None,
+            physics_props=dict(d.get("physics_props", {})),
+            semantic_tags=list(d.get("semantic_tags", [])),
+            scene_id=d.get("scene_id") if d.get("scene_id") else None,
+            parent_obj_id=d.get("parent_obj_id") if d.get("parent_obj_id") else None,
+            state=str(d.get("state", "present")),
+            memory_id=int(d["memory_id"]) if d.get("memory_id") is not None else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialRelation:
+    """空间关系 —— 两个世界对象之间的拓扑关系"""
+    subject_id: str
+    object_id: str
+    relation: str = "next_to"      # on | in | next_to | above | below | touching | contained_by
+    confidence: float = 1.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "subject_id": self.subject_id,
+            "object_id": self.object_id,
+            "relation": self.relation,
+            "confidence": self.confidence,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> SpatialRelation:
+        return cls(
+            subject_id=str(d["subject_id"]),
+            object_id=str(d["object_id"]),
+            relation=str(d.get("relation", "next_to")),
+            confidence=float(d.get("confidence", 1.0)),
+        )
+
+
+# ---------------------------------------------------------------------------
 # 序列化辅助
 # ---------------------------------------------------------------------------
 

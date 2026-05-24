@@ -342,7 +342,7 @@ class TestWorldObjectMemoryIntegration:
 
         # 搜索 table 附近
         found = em.search_world_objects(Vec3(1.0, 0.0, 0.0), radius=0.5)
-        names = [a.embodied_meta["world_object"]["name"] for a in found]
+        names = [a.name for a in found]
         assert "table" in names
         assert "chair" in names
         assert "lamp" not in names
@@ -360,7 +360,7 @@ class TestWorldObjectMemoryIntegration:
 
         spheres = em.search_world_objects(Vec3(1.0, 0.0, 0.0), radius=1.0, obj_type="sphere")
         assert len(spheres) == 1
-        assert spheres[0].embodied_meta["world_object"]["name"] == "ball"
+        assert spheres[0].name == "ball"
 
 
 class TestTrajectoryMemoryIntegration:

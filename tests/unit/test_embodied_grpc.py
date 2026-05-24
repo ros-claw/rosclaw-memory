@@ -304,3 +304,92 @@ class TestGrpcCausal:
         effects_resp = client.stub.GetEffects(GetEffectsRequest(memory_id=cause_id))
         assert len(effects_resp.atoms) == 1
         assert effects_resp.atoms[0].content == "effect"
+
+
+class TestGrpcWorldObjects:
+    def test_add_and_get_world_object(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        obj = WorldObject(
+            obj_id="grpc_cube",
+            obj_type="box",
+            name="test cube",
+            pose=Pose(position=Vec3(1, 2, 3)),
+            size=(0.1, 0.1, 0.1),
+            scene_id="grpc_scene",
+        )
+        oid = client.add_world_object(obj)
+        assert oid == "grpc_cube"
+
+        loaded = client.get_world_object("grpc_cube")
+        assert loaded is not None
+        assert loaded.name == "test cube"
+        assert loaded.pose.position == Vec3(1, 2, 3)
+
+    def test_get_missing_world_object(self, client):
+        assert client.get_world_object("nonexistent") is None
+
+    def test_update_world_object_pose(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        client.add_world_object(WorldObject(
+            obj_id="movable",
+            pose=Pose(position=Vec3(0, 0, 0)),
+            scene_id="s1",
+        ))
+        ok = client.update_world_object_pose(
+            "movable", Pose(position=Vec3(5, 5, 5)), state="moved"
+        )
+        assert ok is True
+        loaded = client.get_world_object("movable")
+        assert loaded.pose.position == Vec3(5, 5, 5)
+        assert loaded.state == "moved"
+
+    def test_search_world_objects(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        client.add_world_object(WorldObject(
+            obj_id="near", pose=Pose(position=Vec3(0, 0, 0)), scene_id="search_scene"
+        ))
+        client.add_world_object(WorldObject(
+            obj_id="far", pose=Pose(position=Vec3(100, 0, 0)), scene_id="search_scene"
+        ))
+        results = client.search_world_objects(
+            Vec3(0, 0, 0), radius=2.0, scene_id="search_scene"
+        )
+        ids = [r.obj_id for r in results]
+        assert "near" in ids
+        assert "far" not in ids
+
+    def test_get_scene_graph(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        client.add_world_object(WorldObject(obj_id="room", scene_id="sg_scene"))
+        client.add_world_object(WorldObject(obj_id="table", scene_id="sg_scene", parent_obj_id="room"))
+        objects, relations = client.get_scene_graph("sg_scene")
+        ids = [o.obj_id for o in objects]
+        assert "room" in ids
+        assert "table" in ids
+
+    def test_compute_relations(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        client.add_world_object(WorldObject(
+            obj_id="table",
+            obj_type="box",
+            pose=Pose(position=Vec3(0, 0, 0)),
+            size=(1.0, 1.0, 1.0),
+            scene_id="rel_scene",
+        ))
+        client.add_world_object(WorldObject(
+            obj_id="cup",
+            obj_type="box",
+            pose=Pose(position=Vec3(0, 0, 0.6)),
+            size=(0.1, 0.1, 0.1),
+            scene_id="rel_scene",
+        ))
+        relations = client.compute_relations("rel_scene", spatial_tolerance=0.05)
+        on_rels = [r for r in relations if r.relation == "on"]
+        assert len(on_rels) == 1
+        assert on_rels[0].subject_id == "cup"
+        assert on_rels[0].object_id == "table"
