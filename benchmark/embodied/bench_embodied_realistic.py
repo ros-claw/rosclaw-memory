@@ -1,15 +1,15 @@
 """
-Realistic embodied memory benchmark simulating a service robot in a multi-room environment.
+Realistic embodied memory benchmark — event-driven ingestion model.
 
-This benchmark models a real-world deployment scenario:
-- Mixed sensor ingestion (RGB, depth, lidar) at 10-30Hz
-- World object tracking with pose updates
-- Action + trajectory recording during task execution
-- Mixed read queries (spatial, temporal, semantic, trajectory similarity)
-- Scene graph construction and spatial relation computation
+Simulates a service robot where:
+- Raw sensor streams (RGB/depth/lidar at 10-30Hz) are filtered by SurprisalGate
+- Only ~2-5% of sensor frames become memories (anomalies, novel observations)
+- Trajectories are recorded per mission
+- World objects are updated on detection/pose-change events
+- Actions and outcomes are recorded on task execution
 
-Note: SQLite is single-writer; concurrent writes are serialized.
-For true concurrent throughput, use SeekDB or Postgres backend.
+This models the real architecture:
+    Sensor Frontend (100Hz) → Filter/SurprisalGate → EmbodiedMemory
 
 Usage:
     PYTHONPATH=../../src python3 bench_embodied_realistic.py --scale 1.0 --output realistic.json
@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
 from powermem.embodied.embodied_memory import EmbodiedMemory
+from powermem.embodied.ingest_pipeline import SensorFrame
 from powermem.embodied.memory_atom import MemoryAtom
 from powermem.embodied.schema import initialize_embodied_schema
 from powermem.embodied.types import (
@@ -224,42 +225,134 @@ def phase_setup_environment(em: EmbodiedMemory) -> Dict[str, Any]:
     return {"setup_ms": setup_ms, "object_count": object_count}
 
 
-def phase_sensor_ingest(em: EmbodiedMemory, n_frames: int) -> Dict[str, Any]:
-    """Simulate multi-sensor ingestion."""
+def phase_sensor_stream_with_surprisal(em: EmbodiedMemory, n_frames: int) -> Dict[str, Any]:
+    """Simulate high-frequency sensor stream filtered by SurprisalGate.
+
+    In real deployments:
+    - RGB @ 30Hz, depth @ 10Hz, lidar @ 10Hz
+    - SurprisalGate filters out 95-98% of frames as redundant
+    - Only anomalies / novel observations become memories
+    """
     t0 = _now_ms()
     modalities = [Modality.RGB, Modality.DEPTH, Modality.LIDAR]
+    stored_count = 0
+    filtered_count = 0
+
     for i in range(n_frames):
         room = random.choice(list(ROOMS.keys()))
         pos = random_point_in_room(room)
         modality = modalities[i % len(modalities)]
-        atom = MemoryAtom.from_observation(
-            content=f"{modality.value} frame at {room}",
-            sensor_pose=Pose(position=pos),
+
+        # Simulate sensor data: mostly stable, occasional anomaly
+        # Anomaly probability increases with scale to ensure some frames pass gate
+        base_value = 0.5
+        if random.random() < 0.03:  # 3% anomaly rate
+            data_value = base_value + random.uniform(2.0, 5.0)  # large deviation
+        else:
+            data_value = base_value + random.uniform(-0.05, 0.05)  # normal noise
+
+        frame = SensorFrame(
             modality=modality,
-            timestamp_sec=float(i) * 0.1,
+            timestamp_sec=float(i) * 0.033,
+            data=[data_value] * 100,  # simplified feature array
+            sensor_pose=Pose(position=pos),
+            frame_id="world",
         )
-        em.add_atom(atom)
+        mid = em.ingest(frame, content=f"{modality.value} frame at {room}")
+        if mid is not None:
+            stored_count += 1
+        else:
+            filtered_count += 1
+
+    # Flush any buffered frames
+    flushed_id = em.flush_pipeline()
+    if flushed_id is not None:
+        stored_count += 1
+
     ingest_ms = _now_ms() - t0
-    return {"ingest_ms": ingest_ms, "frames": n_frames}
+    return {
+        "ingest_ms": ingest_ms,
+        "frames_streamed": n_frames,
+        "frames_stored": stored_count,
+        "frames_filtered": filtered_count,
+        "storage_rate_pct": 100.0 * stored_count / n_frames if n_frames > 0 else 0,
+    }
 
 
-def phase_record_missions(em: EmbodiedMemory, n_missions: int) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Record robot task trajectories and associated actions. Returns (stats, mission_records)."""
+def phase_record_missions_with_events(
+    em: EmbodiedMemory, n_missions: int
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Record missions with realistic event-driven writes during execution.
+
+    Events injected during a mission:
+    - collision / near-collision (5% probability)
+    - detected new object (10% probability)
+    - existing object moved (5% probability)
+    - sensor anomaly at waypoint (5% probability)
+    """
     t0 = _now_ms()
     room_names = list(ROOMS.keys())
     missions = []
+    event_count = 0
+
     for i in range(n_missions):
         start_room = random.choice(room_names)
         end_room = random.choice([r for r in room_names if r != start_room])
         waypoints = random_trajectory_between(start_room, end_room)
-        traj_id = em.record_trajectory(
-            f"mission_{i}: {start_room} -> {end_room}",
-            waypoints,
-        )
+
+        # Mission start
         action_id = em.record_action(
             f"Navigate from {start_room} to {end_room}",
             spatial=waypoints[0][0],
         )
+
+        # Simulate events during traversal
+        for wp_idx, (pos, ts) in enumerate(waypoints):
+            # Event: near-collision with obstacle
+            if random.random() < 0.05:
+                em.record_action(
+                    f"Near-collision detected at waypoint {wp_idx}",
+                    spatial=pos,
+                    outcome_status="warning",
+                )
+                event_count += 1
+
+            # Event: detected new object
+            if random.random() < 0.10:
+                template = random.choice(OBJECT_TEMPLATES)
+                new_obj = WorldObject(
+                    obj_id=f"discovered_{template['name']}_{random.randint(1000, 9999)}",
+                    obj_type=template["type"],
+                    name=template["name"],
+                    pose=Pose(position=pos),
+                    size=template["size"],
+                    scene_id=start_room,
+                    semantic_tags=["graspable", "discovered"],
+                )
+                em.add_world_object(new_obj)
+                event_count += 1
+
+            # Event: existing object moved (update pose)
+            if random.random() < 0.05:
+                # Pick a random existing object and move it slightly
+                scene_objs = em.world_object_store.list_by_scene(start_room, limit=10)
+                if scene_objs:
+                    moved_obj = random.choice(scene_objs)
+                    new_pose = Pose(position=Vec3(
+                        moved_obj.pose.position.x + random.uniform(-0.2, 0.2),
+                        moved_obj.pose.position.y + random.uniform(-0.2, 0.2),
+                        moved_obj.pose.position.z,
+                    ))
+                    em.update_world_object_pose(moved_obj.obj_id, new_pose, state="moved")
+                    event_count += 1
+
+        # Record trajectory summary
+        traj_id = em.record_trajectory(
+            f"mission_{i}: {start_room} -> {end_room}",
+            waypoints,
+        )
+
+        # Mission outcome
         outcome = "success" if random.random() < 0.9 else "collision"
         outcome_id = em.record_outcome(
             action_id=action_id,
@@ -273,8 +366,13 @@ def phase_record_missions(em: EmbodiedMemory, n_missions: int) -> Tuple[Dict[str
             "outcome_id": outcome_id,
             "outcome": outcome,
         })
+
     mission_ms = _now_ms() - t0
-    return {"mission_ms": mission_ms, "mission_count": n_missions}, missions
+    return {
+        "mission_ms": mission_ms,
+        "mission_count": n_missions,
+        "event_count": event_count,
+    }, missions
 
 
 def phase_mixed_queries(
@@ -316,7 +414,6 @@ def phase_mixed_queries(
             end_room = random.choice([r for r in ROOMS if r != room])
             query_wp = random_trajectory_between(room, end_room, n_wp=15)
             center = query_wp[len(query_wp) // 2][0]
-            # Use both spatial + temporal filter for realistic robot query
             t_mid = query_wp[len(query_wp) // 2][1]
             interval = TemporalInterval(start_sec=t_mid - 5.0, end_sec=t_mid + 5.0)
             t0 = _now_ms()
@@ -343,8 +440,6 @@ def phase_mixed_queries(
             latencies["scene_graph"].append(_now_ms() - t0)
 
         elif query_type == "causal":
-            # Realistic: robot asks "what happened after this action?"
-            # Use a recorded action_id directly (O(1) lookup) rather than spatial scan
             mission = random.choice(missions)
             action_id = mission["action_id"]
             t0 = _now_ms()
@@ -364,12 +459,13 @@ def phase_mixed_queries(
 
 
 def phase_write_burst(em: EmbodiedMemory, n_ops: int) -> Dict[str, Any]:
-    """Single-threaded burst write test (SQLite-safe)."""
+    """Single-threaded burst write of event atoms (SQLite-safe)."""
     t0 = _now_ms()
     for i in range(n_ops):
         room = random.choice(list(ROOMS.keys()))
+        event_type = random.choice(["anomaly", "object_detected", "pose_update"])
         atom = MemoryAtom.from_observation(
-            content=f"burst observation {i}",
+            content=f"Event: {event_type} in {room}",
             sensor_pose=Pose(position=random_point_in_room(room)),
             modality=Modality.RGB,
             timestamp_sec=time.time(),
@@ -395,12 +491,13 @@ def run_realistic(scale_factor: float = 1.0) -> Dict[str, Any]:
 
     results: Dict[str, Any] = {"scale_factor": scale_factor}
 
-    n_sensor_frames = int(1000 * scale_factor)
-    n_missions = int(100 * scale_factor)
+    # Scale parameters
+    n_sensor_frames = int(2000 * scale_factor)   # 2000 frames = ~1 min of 30Hz RGB
+    n_missions = int(50 * scale_factor)
     n_queries = int(200 * scale_factor)
-    n_burst_ops = int(500 * scale_factor)
+    n_burst_ops = int(200 * scale_factor)
 
-    print("=== Realistic Embodied Memory Benchmark ===")
+    print("=== Realistic Embodied Memory Benchmark (Event-Driven) ===")
     print(f"Scale factor: {scale_factor}")
     print()
 
@@ -409,15 +506,23 @@ def run_realistic(scale_factor: float = 1.0) -> Dict[str, Any]:
     print(f"      {r['object_count']} objects in {len(ROOMS)} rooms ({r['setup_ms']:.1f} ms)")
     results["setup"] = r
 
-    print("[2/5] Sensor ingestion...")
-    r = phase_sensor_ingest(em, n_sensor_frames)
-    fps = r['frames'] / (r['ingest_ms'] / 1000) if r['ingest_ms'] > 0 else 0
-    print(f"      {r['frames']} frames ({r['ingest_ms']:.1f} ms, {fps:.0f} fps)")
+    print("[2/5] Sensor stream (SurprisalGate filtered)...")
+    r = phase_sensor_stream_with_surprisal(em, n_sensor_frames)
+    print(
+        f"      {r['frames_streamed']} frames streamed, "
+        f"{r['frames_stored']} stored ({r['storage_rate_pct']:.1f}%), "
+        f"{r['frames_filtered']} filtered "
+        f"({r['ingest_ms']:.1f} ms)"
+    )
     results["sensor_ingest"] = r
 
-    print("[3/5] Recording missions...")
-    r, missions = phase_record_missions(em, n_missions)
-    print(f"      {r['mission_count']} missions ({r['mission_ms']:.1f} ms)")
+    print("[3/5] Recording missions with events...")
+    r, missions = phase_record_missions_with_events(em, n_missions)
+    print(
+        f"      {r['mission_count']} missions, "
+        f"{r['event_count']} events injected "
+        f"({r['mission_ms']:.1f} ms)"
+    )
     results["missions"] = r
 
     print("[4/5] Mixed queries...")
@@ -426,26 +531,32 @@ def run_realistic(scale_factor: float = 1.0) -> Dict[str, Any]:
         print(f"      {qtype:15s} count={stats['count']:3d}  p50={stats['p50_ms']:6.2f}ms  p99={stats['p99_ms']:6.2f}ms")
     results["mixed_queries"] = r
 
-    print("[5/5] Write burst stress test...")
+    print("[5/5] Event burst stress test...")
     r = phase_write_burst(em, n_burst_ops)
-    print(f"      {r['total_ops']} ops in {r['burst_write_ms']:.1f} ms ({r['ops_per_sec']:.0f} ops/sec)")
+    print(f"      {r['total_ops']} events in {r['burst_write_ms']:.1f} ms ({r['ops_per_sec']:.0f} ops/sec)")
     results["burst_write"] = r
 
-    # Overall summary
+    # Summary
     total_atoms = len(mock_mem.storage._store)
-    total_wo = len(em.world_object_store.list_by_scene("living_room")) + \
-               len(em.world_object_store.list_by_scene("kitchen")) + \
-               len(em.world_object_store.list_by_scene("bedroom")) + \
-               len(em.world_object_store.list_by_scene("corridor"))
+    total_wo = sum(
+        len(em.world_object_store.list_by_scene(room, limit=1000))
+        for room in ROOMS
+    )
+    traj_atoms = sum(
+        1 for mid in mock_mem.storage._store
+        if mock_mem.storage._store[mid].get("metadata", {}).get("embodied_meta", {}).get("physical_type") == "trajectory"
+    )
     print(f"\nTotal atoms in store: {total_atoms}")
-    print(f"Total world objects:  {total_wo}")
+    print(f"  - Trajectory memories: {traj_atoms}")
+    print(f"  - Other atoms:         {total_atoms - traj_atoms}")
+    print(f"Total world objects:     {total_wo}")
 
     conn.close()
     return results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Realistic embodied memory benchmark")
+    parser = argparse.ArgumentParser(description="Realistic embodied memory benchmark (event-driven)")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale factor (1.0 = default load)")
     parser.add_argument("--output", type=str, default=None, help="Output JSON file")
     args = parser.parse_args()
