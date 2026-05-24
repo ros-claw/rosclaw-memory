@@ -173,12 +173,19 @@ def benchmark_trajectory_similarity(em: EmbodiedMemory, n_trajectories: int, n_q
             waypoints.append((Vec3(x + t * 0.1, y, z), float(t) * 0.5))
         em.record_trajectory(f"traj_{i}", waypoints)
 
-    # Query
+    # Query with spatial coarse filter (eliminates the "no coarse filters" warning)
     latencies: List[float] = []
     for _ in range(n_queries):
-        query_wp = [(Vec3(random.uniform(-5, 5) + t * 0.1, random.uniform(-5, 5), random.uniform(0, 2)), float(t) * 0.5) for t in range(15)]
+        qx, qy, qz = random.uniform(-5, 5), random.uniform(-5, 5), random.uniform(0, 2)
+        query_wp = [(Vec3(qx + t * 0.1, qy, qz), float(t) * 0.5) for t in range(15)]
+        center = Vec3(qx + 0.7, qy, qz)  # midpoint of query trajectory
         t0 = _now_ms()
-        em.search_similar_trajectories(query_wp, top_k=5)
+        em.search_similar_trajectories(
+            query_wp,
+            spatial_center=center,
+            spatial_radius=3.0,
+            top_k=5,
+        )
         latencies.append(_now_ms() - t0)
 
     return {
