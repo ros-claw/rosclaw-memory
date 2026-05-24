@@ -1,0 +1,174 @@
+"""
+Python client helper for EmbodiedMemory gRPC service.
+
+Thin wrapper around the generated gRPC stubs for convenient use
+from Python code or tests.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Tuple
+
+import grpc
+
+from powermem.embodied.proto import embodied_memory_pb2
+from powermem.embodied.proto import embodied_memory_pb2_grpc
+
+from ..memory_atom import MemoryAtom
+from ..types import TemporalInterval, Vec3
+
+
+class EmbodiedMemoryClient:
+    """Client for EmbodiedMemoryService."""
+
+    def __init__(self, target: str = "localhost:50051"):
+        self.channel = grpc.insecure_channel(target)
+        self.stub = embodied_memory_pb2_grpc.EmbodiedMemoryServiceStub(self.channel)
+
+    def close(self) -> None:
+        self.channel.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    # -----------------------------------------------------------------------
+    # Atom CRUD
+    # -----------------------------------------------------------------------
+
+    def add_atom(self, atom: MemoryAtom, infer: bool = False) -> int:
+        """Add a MemoryAtom, return memory_id."""
+        from .servicer import _py_atom_to_pb
+
+        req = embodied_memory_pb2.AddAtomRequest(
+            atom=_py_atom_to_pb(atom), infer=infer
+        )
+        resp = self.stub.AddAtom(req)
+        return resp.memory_id
+
+    def get_atom(self, memory_id: int) -> Optional[MemoryAtom]:
+        """Get atom by ID. Returns None if not found."""
+        from .servicer import _pb_atom_to_py
+
+        req = embodied_memory_pb2.GetAtomRequest(memory_id=memory_id)
+        resp = self.stub.GetAtom(req)
+        if not resp.found:
+            return None
+        return _pb_atom_to_py(resp.atom)
+
+    def delete_atom(self, memory_id: int) -> bool:
+        req = embodied_memory_pb2.DeleteAtomRequest(memory_id=memory_id)
+        resp = self.stub.DeleteAtom(req)
+        return resp.deleted
+
+    # -----------------------------------------------------------------------
+    # Search
+    # -----------------------------------------------------------------------
+
+    def search(
+        self,
+        query: str,
+        spatial_center: Optional[Vec3] = None,
+        spatial_radius: Optional[float] = None,
+        temporal_interval: Optional[TemporalInterval] = None,
+        limit: int = 30,
+    ) -> List[MemoryAtom]:
+        from .servicer import _py_temporal_to_pb, _py_vec3_to_pb
+
+        req = embodied_memory_pb2.SearchRequest(query=query, limit=limit)
+        if spatial_center is not None:
+            req.spatial_center.CopyFrom(_py_vec3_to_pb(spatial_center))
+            req.spatial_radius = spatial_radius or 1.0
+        if temporal_interval is not None:
+            req.temporal_interval.CopyFrom(_py_temporal_to_pb(temporal_interval))
+        resp = self.stub.Search(req)
+        from .servicer import _pb_atom_to_py
+
+        return [_pb_atom_to_py(a) for a in resp.atoms]
+
+    def search_near(
+        self,
+        center: Vec3,
+        radius: float,
+        frame_id: str = "world",
+        limit: int = 30,
+    ) -> List[MemoryAtom]:
+        from .servicer import _pb_atom_to_py, _py_vec3_to_pb
+
+        req = embodied_memory_pb2.SearchNearRequest(
+            center=_py_vec3_to_pb(center),
+            radius=radius,
+            frame_id=frame_id,
+            limit=limit,
+        )
+        resp = self.stub.SearchNear(req)
+        return [_pb_atom_to_py(a) for a in resp.atoms]
+
+    # -----------------------------------------------------------------------
+    # Trajectory
+    # -----------------------------------------------------------------------
+
+    def record_trajectory(
+        self,
+        content: str,
+        waypoints: List[Tuple[Vec3, float]],
+    ) -> int:
+        from .servicer import _py_vec3_to_pb
+
+        pb_waypoints = [
+            embodied_memory_pb2.TrajectoryWaypoint(
+                position=_py_vec3_to_pb(pos), timestamp_sec=ts
+            )
+            for pos, ts in waypoints
+        ]
+        req = embodied_memory_pb2.RecordTrajectoryRequest(
+            content=content, waypoints=pb_waypoints
+        )
+        resp = self.stub.RecordTrajectory(req)
+        return resp.memory_id
+
+    def search_similar_trajectories(
+        self,
+        query_waypoints: List[Tuple[Vec3, float]],
+        spatial_center: Optional[Vec3] = None,
+        spatial_radius: Optional[float] = None,
+        temporal_interval: Optional[TemporalInterval] = None,
+        top_k: int = 10,
+        max_dtw_distance: Optional[float] = None,
+    ) -> List[Tuple[MemoryAtom, float]]:
+        from .servicer import _py_temporal_to_pb, _py_vec3_to_pb
+
+        pb_waypoints = [
+            embodied_memory_pb2.TrajectoryWaypoint(
+                position=_py_vec3_to_pb(pos), timestamp_sec=ts
+            )
+            for pos, ts in query_waypoints
+        ]
+        req = embodied_memory_pb2.SearchSimilarTrajectoriesRequest(
+            query_waypoints=pb_waypoints,
+            top_k=top_k,
+        )
+        if spatial_center is not None:
+            req.spatial_center.CopyFrom(_py_vec3_to_pb(spatial_center))
+            req.spatial_radius = spatial_radius or 1.0
+        if temporal_interval is not None:
+            req.temporal_interval.CopyFrom(_py_temporal_to_pb(temporal_interval))
+        if max_dtw_distance is not None:
+            req.max_dtw_distance = max_dtw_distance
+
+        resp = self.stub.SearchSimilarTrajectories(req)
+        from .servicer import _pb_atom_to_py
+
+        return [(_pb_atom_to_py(r.atom), r.dtw_distance) for r in resp.results]
+
+    # -----------------------------------------------------------------------
+    # Stats
+    # -----------------------------------------------------------------------
+
+    def get_stats(self) -> dict:
+        resp = self.stub.GetStats(embodied_memory_pb2.GetStatsRequest())
+        import json
+
+        return {k: json.loads(v) for k, v in resp.stats_json.items()}

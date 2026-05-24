@@ -55,6 +55,8 @@ dependencies = [
     "psutil>=5.9.0",
     "zai-sdk>=0.2.0",
     "pyseekdb>=0.1.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +70,7 @@ dev = [
     "isort>=5.12.0",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
+    "grpcio-testing>=1.60.0",
 ]
 test = [
     "pytest>=8.2.2",

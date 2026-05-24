@@ -1,0 +1,306 @@
+
+"""
+Tests for EmbodiedMemory gRPC service.
+
+Uses an in-process gRPC server + real EmbodiedMemory with mock PowerMem storage.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from concurrent import futures
+from typing import Any, Dict, Optional
+
+import grpc
+import pytest
+
+from powermem.embodied.embodied_memory import EmbodiedMemory
+from powermem.embodied.grpc.client import EmbodiedMemoryClient
+from powermem.embodied.grpc.servicer import EmbodiedMemoryServicer
+from powermem.embodied.memory_atom import MemoryAtom
+from powermem.embodied.proto import embodied_memory_pb2
+from powermem.embodied.proto import embodied_memory_pb2_grpc
+from powermem.embodied.schema import initialize_embodied_schema
+from powermem.embodied.types import MemoryAction, Modality, TemporalInterval, Vec3
+
+
+# ---------------------------------------------------------------------------
+# Mock PowerMem (same pattern as test_embodied_deep.py)
+# ---------------------------------------------------------------------------
+
+class _MockStorageAdapter:
+    def __init__(self):
+        self._store: Dict[int, Dict[str, Any]] = {}
+        self._next_id = 1000
+
+    def add_memory(self, payload: Dict[str, Any]) -> int:
+        mid = self._next_id
+        self._next_id += 1
+        self._store[mid] = {
+            "id": mid,
+            "data": payload.get("content", ""),
+            "content": payload.get("content", ""),
+            "metadata": payload.get("metadata", {}),
+            "user_id": payload.get("user_id", ""),
+            "agent_id": payload.get("agent_id", ""),
+            "run_id": payload.get("run_id", ""),
+            "created_at": "2024-01-01T00:00:00",
+        }
+        return mid
+
+    def get_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
+        return self._store.get(memory_id)
+
+    def delete_memory(self, memory_id: int, user_id=None, agent_id=None) -> bool:
+        return self._store.pop(memory_id, None) is not None
+
+    def search_memories(self, **kwargs) -> list:
+        limit = kwargs.get("limit", 30)
+        results = []
+        for mid, item in list(self._store.items())[:limit]:
+            results.append({
+                "id": mid,
+                "memory": item["data"],
+                "score": 0.9,
+                "metadata": item.get("metadata", {}),
+            })
+        return results
+
+    def update_memory(self, memory_id: int, content: str, user_id=None, agent_id=None, metadata=None) -> Dict[str, Any]:
+        item = self._store.get(memory_id)
+        if item is None:
+            raise KeyError(memory_id)
+        item["data"] = content
+        item["content"] = content
+        if metadata is not None:
+            item["metadata"] = metadata
+        return item
+
+
+class _MockMemory:
+    def __init__(self):
+        self.storage = _MockStorageAdapter()
+        self.agent_id = "test_agent"
+
+    def search(self, query, user_id=None, agent_id=None, run_id=None, filters=None, limit=30, threshold=None):
+        results = self.storage.search_memories(
+            query_embedding=None, user_id=user_id, agent_id=agent_id,
+            run_id=run_id, filters=filters, limit=limit, query=query, threshold=threshold,
+        )
+        return {"results": results, "relations": []}
+
+    def delete(self, memory_id: int) -> bool:
+        return self.storage.delete_memory(memory_id)
+
+    def update(self, memory_id: int, content: str, user_id=None, agent_id=None, metadata=None) -> Dict[str, Any]:
+        return self.storage.update_memory(memory_id, content, user_id, agent_id, metadata)
+
+
+@pytest.fixture
+def sqlite_conn():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    initialize_embodied_schema(conn)
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def grpc_server(sqlite_conn):
+    mock_mem = _MockMemory()
+    em = EmbodiedMemory(memory=mock_mem, db_conn=sqlite_conn, enable_plugin=False)
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    embodied_memory_pb2_grpc.add_EmbodiedMemoryServiceServicer_to_server(
+        EmbodiedMemoryServicer(em), server
+    )
+    port = server.add_insecure_port("localhost:0")
+    server.start()
+    yield f"localhost:{port}"
+    server.stop(grace=1.0)
+
+
+@pytest.fixture
+def client(grpc_server):
+    with EmbodiedMemoryClient(target=grpc_server) as c:
+        yield c
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+class TestGrpcAtomCRUD:
+    def test_add_and_get_atom(self, client):
+        atom = MemoryAtom(content="test atom", spatial=Vec3(1, 2, 3))
+        mid = client.add_atom(atom)
+        assert mid >= 1000
+
+        retrieved = client.get_atom(mid)
+        assert retrieved is not None
+        assert retrieved.content == "test atom"
+        assert retrieved.spatial == Vec3(1, 2, 3)
+
+    def test_get_missing_atom(self, client):
+        assert client.get_atom(999999) is None
+
+    def test_delete_atom(self, client):
+        mid = client.add_atom(MemoryAtom(content="to delete"))
+        assert client.delete_atom(mid) is True
+        assert client.get_atom(mid) is None
+
+    def test_delete_nonexistent(self, client):
+        assert client.delete_atom(999999) is False
+
+
+class TestGrpcSearch:
+    def test_search_near(self, client):
+        client.add_atom(MemoryAtom(content="a", spatial=Vec3(0, 0, 0)))
+        client.add_atom(MemoryAtom(content="b", spatial=Vec3(1, 0, 0)))
+        client.add_atom(MemoryAtom(content="c", spatial=Vec3(10, 0, 0)))
+
+        results = client.search_near(Vec3(0, 0, 0), radius=2.0)
+        contents = [r.content for r in results]
+        assert "a" in contents
+        assert "b" in contents
+        assert "c" not in contents
+
+    def test_search_temporal(self, client):
+        client.add_atom(MemoryAtom(
+            content="morning",
+            temporal=TemporalInterval(8.0, 10.0),
+        ))
+        client.add_atom(MemoryAtom(
+            content="night",
+            temporal=TemporalInterval(20.0, 22.0),
+        ))
+
+        results = client.search(
+            query="memory",
+            temporal_interval=TemporalInterval(9.0, 11.0),
+        )
+        contents = [r.content for r in results]
+        assert "morning" in contents
+        assert "night" not in contents
+
+
+class TestGrpcTrajectory:
+    def test_record_and_search_similar(self, client):
+        # Record a straight-line trajectory
+        waypoints = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(1, 0, 0), 1.0),
+            (Vec3(2, 0, 0), 2.0),
+        ]
+        mid = client.record_trajectory("straight line", waypoints)
+        assert mid is not None
+
+        # Search with identical waypoints -> distance should be 0
+        results = client.search_similar_trajectories(
+            query_waypoints=waypoints,
+            top_k=5,
+        )
+        assert len(results) >= 1
+        atom, dtw = results[0]
+        assert atom.content == "straight line"
+        assert dtw == pytest.approx(0.0)
+
+    def test_similar_trajectory_dtw_small(self, client):
+        # Original
+        w1 = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(1, 0, 0), 1.0),
+            (Vec3(2, 0, 0), 2.0),
+        ]
+        client.record_trajectory("original", w1)
+
+        # Slightly perturbed (same shape, small noise)
+        w2 = [
+            (Vec3(0.1, 0, 0), 0.0),
+            (Vec3(1.1, 0, 0), 1.0),
+            (Vec3(2.1, 0, 0), 2.0),
+        ]
+        results = client.search_similar_trajectories(
+            query_waypoints=w2,
+            top_k=5,
+        )
+        assert len(results) >= 1
+        _, dtw = results[0]
+        # Small perturbation should yield small DTW
+        assert dtw < 0.5
+
+    def test_different_trajectory_high_dtw(self, client):
+        # Original straight line
+        w1 = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(1, 0, 0), 1.0),
+            (Vec3(2, 0, 0), 2.0),
+        ]
+        client.record_trajectory("straight", w1)
+
+        # Query is perpendicular line
+        w2 = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(0, 5, 0), 1.0),
+            (Vec3(0, 10, 0), 2.0),
+        ]
+        results = client.search_similar_trajectories(
+            query_waypoints=w2,
+            top_k=5,
+        )
+        # Signature pre-filter may reject it, or DTW will be large
+        if results:
+            _, dtw = results[0]
+            assert dtw > 1.0
+
+    def test_max_dtw_distance_filter(self, client):
+        w1 = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(10, 0, 0), 1.0),
+        ]
+        client.record_trajectory("far", w1)
+
+        w2 = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(0, 0, 0), 1.0),
+        ]
+        # With tight threshold, should exclude "far"
+        results = client.search_similar_trajectories(
+            query_waypoints=w2,
+            max_dtw_distance=0.5,
+            top_k=5,
+        )
+        assert len(results) == 0
+
+
+class TestGrpcIngest:
+    def test_ingest_and_get_stats(self, client):
+        frame = embodied_memory_pb2.SensorFrame(
+            modality="rgb",
+            timestamp_sec=0.0,
+            data=[0.5] * 10,
+            sensor_position=embodied_memory_pb2.Vec3(x=1, y=0, z=0),
+        )
+        req = embodied_memory_pb2.IngestSensorFrameRequest(frame=frame, content="test ingest")
+        resp = client.stub.IngestSensorFrame(req)
+        # First frame initializes gate, may or may not store depending on pipeline config
+        assert resp.error_message == ""
+
+    def test_get_stats(self, client):
+        stats = client.get_stats()
+        assert "spatial" in stats
+
+
+class TestGrpcCausal:
+    def test_causes_and_effects(self, client):
+        cause_id = client.add_atom(MemoryAtom(content="cause"))
+        effect_id = client.add_atom(MemoryAtom(content="effect", causal_parents=[cause_id]))
+
+        # Use low-level stub for causal RPCs (not exposed on client helper yet)
+        from powermem.embodied.proto.embodied_memory_pb2 import GetCausesRequest, GetEffectsRequest
+
+        causes_resp = client.stub.GetCauses(GetCausesRequest(memory_id=effect_id))
+        assert len(causes_resp.atoms) == 1
+        assert causes_resp.atoms[0].content == "cause"
+
+        effects_resp = client.stub.GetEffects(GetEffectsRequest(memory_id=cause_id))
+        assert len(effects_resp.atoms) == 1
+        assert effects_resp.atoms[0].content == "effect"

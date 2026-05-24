@@ -1,0 +1,283 @@
+syntax = "proto3";
+
+package powermem.embodied;
+
+// ============================================================================
+// Basic types
+// ============================================================================
+
+message Vec3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message TemporalInterval {
+  double start_sec = 1;
+  double end_sec = 2;
+  string frame_id = 3;
+}
+
+message SensorFrame {
+  string modality = 1;
+  double timestamp_sec = 2;
+  repeated double data = 3;
+  Vec3 sensor_position = 4;
+  string frame_id = 5;
+}
+
+message TrajectoryWaypoint {
+  Vec3 position = 1;
+  double timestamp_sec = 2;
+}
+
+// ============================================================================
+// MemoryAtom payload
+// ============================================================================
+
+message MemoryAtomPayload {
+  string content = 1;
+  optional int64 memory_id = 2;
+  string user_id = 3;
+  string agent_id = 4;
+  string run_id = 5;
+  optional Vec3 spatial = 6;
+  string spatial_frame_id = 7;
+  optional TemporalInterval temporal = 8;
+  string action = 9;
+  double prediction_error = 10;
+  repeated int64 causal_parents = 11;
+  map<string, string> embodied_meta_json = 12;
+}
+
+// ============================================================================
+// AddAtom
+// ============================================================================
+
+message AddAtomRequest {
+  MemoryAtomPayload atom = 1;
+  bool infer = 2;
+}
+
+message AddAtomResponse {
+  int64 memory_id = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// ============================================================================
+// GetAtom
+// ============================================================================
+
+message GetAtomRequest {
+  int64 memory_id = 1;
+}
+
+message GetAtomResponse {
+  MemoryAtomPayload atom = 1;
+  bool found = 2;
+}
+
+// ============================================================================
+// DeleteAtom
+// ============================================================================
+
+message DeleteAtomRequest {
+  int64 memory_id = 1;
+}
+
+message DeleteAtomResponse {
+  bool deleted = 1;
+}
+
+// ============================================================================
+// Search (hybrid semantic + spatial + temporal)
+// ============================================================================
+
+message SearchRequest {
+  string query = 1;
+  optional Vec3 spatial_center = 2;
+  optional double spatial_radius = 3;
+  optional TemporalInterval temporal_interval = 4;
+  string temporal_relation = 5;  // empty = overlap
+  int32 limit = 6;
+}
+
+message SearchResponse {
+  repeated MemoryAtomPayload atoms = 1;
+}
+
+// ============================================================================
+// SearchNear
+// ============================================================================
+
+message SearchNearRequest {
+  Vec3 center = 1;
+  double radius = 2;
+  string frame_id = 3;
+  int32 limit = 4;
+}
+
+message SearchNearResponse {
+  repeated MemoryAtomPayload atoms = 1;
+}
+
+// ============================================================================
+// SearchTemporal
+// ============================================================================
+
+message SearchTemporalRequest {
+  TemporalInterval interval = 1;
+  string relation = 2;  // empty = overlap
+  string frame_id = 3;
+  int32 limit = 4;
+}
+
+message SearchTemporalResponse {
+  repeated MemoryAtomPayload atoms = 1;
+}
+
+// ============================================================================
+// RecordTrajectory
+// ============================================================================
+
+message RecordTrajectoryRequest {
+  string content = 1;
+  repeated TrajectoryWaypoint waypoints = 2;
+}
+
+message RecordTrajectoryResponse {
+  int64 memory_id = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// ============================================================================
+// SearchSimilarTrajectories
+// ============================================================================
+
+message SearchSimilarTrajectoriesRequest {
+  repeated TrajectoryWaypoint query_waypoints = 1;
+  optional Vec3 spatial_center = 2;
+  optional double spatial_radius = 3;
+  optional TemporalInterval temporal_interval = 4;
+  int32 top_k = 5;
+  optional double max_dtw_distance = 6;
+}
+
+message TrajectorySimilarityResult {
+  MemoryAtomPayload atom = 1;
+  double dtw_distance = 2;
+}
+
+message SearchSimilarTrajectoriesResponse {
+  repeated TrajectorySimilarityResult results = 1;
+}
+
+// ============================================================================
+// IngestSensorFrame
+// ============================================================================
+
+message IngestSensorFrameRequest {
+  SensorFrame frame = 1;
+  optional string content = 2;
+}
+
+message IngestSensorFrameResponse {
+  optional int64 memory_id = 1;
+  bool stored = 2;
+  string error_message = 3;
+}
+
+// ============================================================================
+// SaveModel
+// ============================================================================
+
+message SaveModelRequest {
+  string model_xml = 1;
+  optional string model_id = 2;
+  string model_type = 3;
+}
+
+message SaveModelResponse {
+  string model_id = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// ============================================================================
+// CheckSelfCollision
+// ============================================================================
+
+message CheckSelfCollisionRequest {
+  string model_id = 1;
+}
+
+message CollisionPair {
+  string link_a = 1;
+  string link_b = 2;
+  double distance = 3;
+}
+
+message CheckSelfCollisionResponse {
+  repeated CollisionPair pairs = 1;
+}
+
+// ============================================================================
+// Causal graph
+// ============================================================================
+
+message GetCausesRequest {
+  int64 memory_id = 1;
+  int32 limit = 2;
+}
+
+message GetCausesResponse {
+  repeated MemoryAtomPayload atoms = 1;
+}
+
+message GetEffectsRequest {
+  int64 memory_id = 1;
+  int32 limit = 2;
+}
+
+message GetEffectsResponse {
+  repeated MemoryAtomPayload atoms = 1;
+}
+
+// ============================================================================
+// Stats
+// ============================================================================
+
+message GetStatsRequest {}
+
+message GetStatsResponse {
+  map<string, string> stats_json = 1;
+}
+
+// ============================================================================
+// Service
+// ============================================================================
+
+service EmbodiedMemoryService {
+  rpc AddAtom(AddAtomRequest) returns (AddAtomResponse);
+  rpc GetAtom(GetAtomRequest) returns (GetAtomResponse);
+  rpc DeleteAtom(DeleteAtomRequest) returns (DeleteAtomResponse);
+
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc SearchNear(SearchNearRequest) returns (SearchNearResponse);
+  rpc SearchTemporal(SearchTemporalRequest) returns (SearchTemporalResponse);
+
+  rpc RecordTrajectory(RecordTrajectoryRequest) returns (RecordTrajectoryResponse);
+  rpc SearchSimilarTrajectories(SearchSimilarTrajectoriesRequest) returns (SearchSimilarTrajectoriesResponse);
+
+  rpc IngestSensorFrame(IngestSensorFrameRequest) returns (IngestSensorFrameResponse);
+
+  rpc SaveModel(SaveModelRequest) returns (SaveModelResponse);
+  rpc CheckSelfCollision(CheckSelfCollisionRequest) returns (CheckSelfCollisionResponse);
+
+  rpc GetCauses(GetCausesRequest) returns (GetCausesResponse);
+  rpc GetEffects(GetEffectsRequest) returns (GetEffectsResponse);
+
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
