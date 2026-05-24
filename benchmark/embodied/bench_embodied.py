@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
 from powermem.embodied.embodied_memory import EmbodiedMemory
 from powermem.embodied.schema import initialize_embodied_schema
-from powermem.embodied.types import MemoryAction, MemoryAtom, Pose, TemporalInterval, Vec3, WorldObject
+from powermem.embodied.memory_atom import MemoryAtom
+from powermem.embodied.types import MemoryAction, Pose, TemporalInterval, Vec3, WorldObject
 
 
 class MockStorageAdapter:
