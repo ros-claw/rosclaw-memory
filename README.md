@@ -1,255 +1,291 @@
-# PowerMem
+# RosClaw Memory
 
-**Persistent, self-evolving memory for AI agents and applications.**
+**Embodied Intelligence Memory for Physical AI Robots**
 
-[![PyPI version](https://img.shields.io/pypi/v/powermem)](https://pypi.org/project/powermem/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/powermem)](https://pypi.org/project/powermem/)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/powermem/)
-[![License Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![GitHub](https://img.shields.io/badge/GitHub-oceanbase%2Fpowermem-181717?logo=github)](https://github.com/oceanbase/powermem)
-[![Discord](https://img.shields.io/badge/Discord-community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/74cF8vbNEs)
-
-*English · [中文](README_CN.md) · [日本語](README_JP.md)*
-
-PowerMem combines vector, full-text, and graph retrieval with LLM-driven memory extraction and Ebbinghaus-style time decay. It ships **two-layer Experience + Skill distillation** for self-evolving memory, multi-agent isolation, user profiles, and multimodal signals (text, image, audio).
+Built on top of [PowerMem](https://github.com/oceanbase/powermem) + embedded SeekDB (OceanBase). Not a replacement — an extension layer that gives robots a brain-like memory system for physical world experiences.
 
 ---
 
-## Benchmarks
+## Design Philosophy
 
-### [LOCOMO](https://github.com/snap-research/locomo)
-
-| Metric | PowerMem | Baseline | Improvement |
-|--------|----------|-------------------------|-------------|
-| Accuracy | **87.79%** | 52.9% | **+65.9%** |
-| Search p95 latency | **1.44 s** | 17.12 s | **-91.6%** |
-| Tokens | **~0.9 k** | 26 k | **-96.5%** |
-
-### [AppWorld](https://github.com/StonyBrookNLP/appworld)
-
-| Metric | PowerMem | Baseline | Improvement |
-|--------|----------|-------------------------|-------------|
-| Pass | **39%** | 24% | **+62.5%** |
-| Avg steps | **6.2** | 9.5 | **-34.7%** |
-| Total tokens | **1.74 M** | 2.56 M | **-32.0%** |
-
-Reproduce: [`benchmark/`](benchmark/). Under the hood: **two-layer Experience + Skill distillation + 4-way hybrid retrieval + LLM auto-merge** (API: `memory.distill_all() / add_skill / add_experience / search_*`, demo [`examples/experience_skill_usage.py`](examples/experience_skill_usage.py)).
+- **Brain-like architecture** — Memory is not a database table. It is a spatial-temporal-causal graph with predictive state, surprise detection, and associative retrieval.
+- **Zero ROS dependency** — Robot stacks should not be forced into a specific middleware. gRPC + plain Python SDK. Use it from C++, Rust, Go, or Python.
+- **First principles** — Every feature starts from "how does a physical agent remember?" rather than "how does a web app cache?"
+- **Build ON TOP of PowerMem** — We inherit vector search, full-text retrieval, graph edges, LLM-driven extraction, and Ebbinghaus decay from PowerMem. We add the *embodied* dimension: space, time, physics, and body.
 
 ---
 
-## Integrations — pick your client, copy one line
+## What It Does
 
-PowerMem ships first-party plugins for the most common AI clients. All of them point at the same backend (HTTP server or local `pmem` CLI) — no per-client schema rewrites.
+RosClaw Memory turns raw robot experiences — sensor frames, trajectories, collisions, constraints, causal outcomes — into queryable, generalizable memory atoms.
 
-| Client / framework | One-line install | Mode |
-|--------------------|------------------|------|
-| OpenClaw (ClawdBot) | `openclaw plugins install memory-powermem` | CLI (default), HTTP optional |
-| Claude Code | `git clone https://github.com/oceanbase/powermem && claude --plugin-dir powermem/apps/claude-code-plugin` | HTTP (default), MCP optional |
-| Cursor / VS Code / Codex / Windsurf / GitHub Copilot | Install the [PowerMem VS Code extension](apps/vscode-extension/) and run **PowerMem: Link to AI tools** | MCP or HTTP, per client |
-| Claude Desktop / Cline / any MCP client | `uvx powermem-mcp sse` | MCP (SSE / stdio / streamable-http) |
-| LangChain / LangGraph | `pip install powermem`, see [examples](#examples) | Python SDK |
-| Go / Java / TypeScript apps | See [SDKs](#sdks) below | HTTP REST |
-
-### OpenClaw (ClawdBot)
-
-[OpenClaw](https://github.com/openclaw/openclaw) gains long-term memory through the [`memory-powermem`](https://github.com/ob-labs/memory-powermem) plugin.
-
-```bash
-openclaw plugins install memory-powermem
 ```
-
-Defaults to **CLI mode** — the plugin invokes a bundled `pmem` against SQLite under `~/.openclaw/`, using the model OpenClaw already injects. No separate server, no extra `.env`. Switch to **HTTP mode** when a team-shared PowerMem API is preferred (see the plugin's README for `requestConfig.memory_db`).
-
-<div align="center">
-
-<img src="docs/images/openclaw_powermem.jpeg" alt="PowerMem with OpenClaw" width="640"/>
-
-</div>
-
-### Claude Code
-
-```bash
-# From a clone of this repo
-claude --plugin-dir /path/to/powermem/apps/claude-code-plugin
-
-# Or unpack a packaged release zip and pass --plugin-dir to it
-make package-claude-plugin   # builds apps/claude-code-plugin/dist/<version>.zip
+Sensor Stream → Surprisal Gate → Memory Atom → Spatial Index
+                                                    ↓
+                                           Temporal Index → Causal Graph
+                                                    ↓
+                                              EmbodiedMemory (gRPC / Python)
 ```
-
-HTTP mode is on by default:
-
-- `UserPromptSubmit` -> `POST /api/v1/memories/search` and the top results are injected as `additionalContext`.
-- `SessionEnd` / `PostCompact` -> `POST /api/v1/memories` writes the transcript or compact summary.
-- No MCP setup, no Python needed on the user's machine (hooks ship as native binaries under `hooks/bin/`).
-
-Switch to MCP mode for in-chat `search_memories` / `add_memory` tools:
-
-```bash
-bash scripts/apply-connection-mode.sh mcp
-```
-
-Full reference: [`apps/claude-code-plugin/README.md`](apps/claude-code-plugin/README.md).
-
-### Cursor, VS Code, Codex, Windsurf, GitHub Copilot
-
-Install the **PowerMem VS Code extension** once (works in VS Code and Cursor). The **PowerMem: Link to AI tools** command auto-writes the right MCP or HTTP config for every supported client:
-
-| Client | Config path written |
-|--------|---------------------|
-| Cursor | `~/.cursor/mcp.json` (merged) |
-| Claude (Desktop / Code) | `~/.claude/providers/powermem.json` |
-| Codex | `~/.codex/context.json` (merged) |
-| Windsurf | `~/.windsurf/context/powermem.json` |
-| GitHub Copilot | `~/.github/copilot/powermem.json` |
-
-The same extension also provides **Query memories**, **Add selection to memory**, **Quick note**, and a status-bar **Dashboard**. See [`apps/vscode-extension/README.md`](apps/vscode-extension/README.md).
-
-### Any MCP client (Claude Desktop, Cline, …)
-
-```bash
-uvx powermem-mcp sse                  # SSE on :8000 (recommended)
-uvx powermem-mcp stdio                # stdio
-uvx powermem-mcp streamable-http      # streamable HTTP
-```
-
-Client config (Claude Desktop and most MCP clients):
-
-```json
-{
-  "mcpServers": {
-    "powermem": { "url": "http://localhost:8000/mcp" }
-  }
-}
-```
-
-Exposed tools: `add_memory`, `search_memories`, `get_memory_by_id`, `update_memory`, `delete_memory`, `delete_all_memories`, `list_memories`. Full reference: [MCP Server](docs/api/0004-mcp.md).
-
-### LangChain & LangGraph
-
-```bash
-pip install powermem langchain langchain-openai
-```
-
-End-to-end runnable demos:
-
-- [LangChain healthcare bot](examples/langchain/README.md)
-- [LangGraph customer service bot](examples/langgraph/README.md)
-
-### SDKs
-
-| Language | Package |
-|----------|---------|
-| Python | `pip install powermem` (this repo) |
-| Go | [`ob-labs/powermem-go`](https://github.com/ob-labs/powermem-go) |
-| Java | [`ob-labs/powermem-java`](https://github.com/ob-labs/powermem-java) |
-| TypeScript | [`ob-labs/powermem-ts`](https://github.com/ob-labs/powermem-ts) |
 
 ---
 
-## Quick start (Python SDK)
+## Core Capabilities
 
-**Prerequisites:** Copy [.env.example](.env.example) to `.env` and set **LLM** and **embedding** credentials. The default database is SQLite; OceanBase can use **embedded SeekDB** without running a separate database service. After install, `pmem config init` walks you through the same setup interactively. See [Getting started](docs/guides/0001-getting_started.md).
+### 1. Embodied Memory Atom
 
-### Install
+A unified memory primitive with six facets:
+
+| Facet | Field | Example |
+|-------|-------|---------|
+| **Spatial** | `Vec3(x, y, z)` + frame_id | Where did this happen? |
+| **Temporal** | `TemporalInterval(start, end)` + frame_id | When did this happen? |
+| **Perceptual** | `Modality` (RGB, depth, lidar, tactile, audio, proprioception) | What was sensed? |
+| **Physical** | `CollisionBody`, `JointLimit`, `PhysicalConstraint` | What body state was involved? |
+| **Uncertainty** | `prediction_error`, `information_gain` | How surprising was this? |
+| **Affective** | `affective_tags` (curiosity, pain, satisfaction) | What was the valence? |
+
+```python
+from powermem.embodied import MemoryAtom, Vec3, TemporalInterval, Modality
+
+atom = MemoryAtom(
+    content="grasped the red cube",
+    spatial=Vec3(0.5, -0.2, 0.1),
+    temporal=TemporalInterval(12.5, 14.0, frame_id="session_01"),
+    modality=Modality.TACTILE,
+    prediction_error=0.85,  # high surprise → strong memory encoding
+)
+```
+
+### 2. Multi-Format Robot Model Parsing
+
+Load robot descriptions without ROS:
+
+```python
+from powermem.embodied.parsers import parse_model
+
+result = parse_model(open("franka.urdf").read())   # URDF
+result = parse_model(open("anymal.xml").read())    # MJCF
+result = parse_model(open("scene.usda").read())    # OpenUSD
+```
+
+Supported formats: **URDF, MJCF, SDF, Xacro, OpenUSD** (lazy-loaded modules).
+
+### 3. Collision Detection & Kinematics
+
+```python
+from powermem.embodied.embodied_memory import EmbodiedMemory
+
+em = EmbodiedMemory(memory=pmem, db_conn=conn)
+
+# Forward kinematics
+fk = em.forward_kinematics("panda", joint_angles=[0, -0.5, 0, -1.8, 0, 1.5, 0])
+
+# Self-collision check
+pairs = em.check_self_collision("panda")
+# → [CollisionPair(link_a="panda_link4", link_b="panda_link6", distance=-0.012)]
+```
+
+Collision geometry: Sphere, Capsule, AABB. Broad-phase AABB tree + analytical narrow-phase.
+
+### 4. Temporal Reasoning (Allen Interval Algebra)
+
+13 interval relations for causal and temporal queries:
+
+```python
+from powermem.embodied.types import TemporalInterval, IntervalRelation
+
+# Find all memories that happened DURING a specific session
+results = em.search_temporal(
+    interval=TemporalInterval(10.0, 20.0),
+    relation=IntervalRelation.DURING,
+)
+```
+
+### 5. Spatial Indexing (Voxel Hash)
+
+O(1) spatial lookup for memory atoms:
+
+```python
+# Query all memories within 0.5m of a point
+neighbors = em.search_near(center=Vec3(1.0, 0.0, 0.0), radius=0.5)
+```
+
+### 6. Trajectory Similarity Search (DTW)
+
+Find historically similar trajectories — essential for "have I done this grasp before?"
+
+```python
+waypoints = [
+    (Vec3(0, 0, 0), 0.0),
+    (Vec3(0.1, 0.2, 0.3), 1.0),
+    (Vec3(0.2, 0.4, 0.5), 2.0),
+]
+
+# Record and later retrieve by shape similarity
+mid = em.record_trajectory("approach from left", waypoints)
+
+similar = em.search_similar_trajectories(
+    query_waypoints=new_waypoints,
+    top_k=5,
+    max_dtw_distance=0.3,
+)
+# → [(MemoryAtom, dtw_distance), ...]
+```
+
+- **Coarse filter** — trajectory feature signature (duration, length, bounding box, principal direction)
+- **Fine ranking** — Dynamic Time Warping (DTW) with optional Sakoe-Chiba bandwidth
+- **Normalized distance** — comparable across different-length trajectories
+
+### 7. Causal Graph
+
+Link actions to outcomes:
+
+```python
+cause_id = em.add_atom(MemoryAtom(content="motor overheated"))
+effect_id = em.add_atom(MemoryAtom(content="gripper slipped", causal_parents=[cause_id]))
+
+causes = em.get_causes(effect_id)   # → ["motor overheated"]
+effects = em.get_effects(cause_id)  # → ["gripper slipped"]
+```
+
+### 8. Predictive State & Surprisal Gate
+
+Only surprising experiences become long-term memory. A sliding Welford window computes a 3-sigma dynamic threshold.
+
+```python
+from powermem.embodied.ingest_pipeline import SensorFrame, Modality
+
+frame = SensorFrame(
+    modality=Modality.PROPRICEPTION,
+    timestamp_sec=10.5,
+    data=[0.12, 0.34, 0.56],
+)
+mid = em.ingest(frame, content="joint torque anomaly")
+# If prediction_error > 3σ, it stores; otherwise it is gated out.
+```
+
+### 9. Physical Constraints as Memory
+
+```python
+constraint = PhysicalConstraint(
+    constraint_type="no_fly_zone",
+    region=AABB(min=Vec3(0,0,0), max=Vec3(1,1,1)),
+)
+em.add_constraint(constraint)
+```
+
+Constraints are stored as MemoryAtoms and indexed by spatial region.
+
+### 10. gRPC Service
+
+Expose the full `EmbodiedMemory` API to C++, Rust, Go, or any gRPC-capable stack:
+
+```python
+from powermem.embodied.grpc.server import serve
+
+server = serve(memory=pmem, db_conn=conn, port=50051)
+server.wait_for_termination()
+```
+
+Python client helper:
+
+```python
+from powermem.embodied.grpc.client import EmbodiedMemoryClient
+
+with EmbodiedMemoryClient("localhost:50051") as client:
+    mid = client.add_atom(atom)
+    results = client.search_similar_trajectories(waypoints, top_k=5)
+```
+
+Supported RPCs: `AddAtom`, `GetAtom`, `DeleteAtom`, `Search`, `SearchNear`, `SearchTemporal`, `RecordTrajectory`, `SearchSimilarTrajectories`, `IngestSensorFrame`, `SaveModel`, `CheckSelfCollision`, `GetCauses`, `GetEffects`, `GetStats`.
+
+---
+
+## Quick Start
 
 ```bash
 pip install powermem
 ```
 
-### SDK
-
-Run from a directory that contains your configured `.env`:
-
 ```python
-from powermem import Memory, auto_config
+import sqlite3
+from powermem.core.memory import Memory, auto_config
+from powermem.embodied.embodied_memory import EmbodiedMemory
+from powermem.embodied.schema import initialize_embodied_schema
 
-memory = Memory(config=auto_config())
+# 1. PowerMem core
+pmem = Memory(config=auto_config())
 
-memory.add("User likes coffee", user_id="user123")
+# 2. SQLite-backed embodied layer
+conn = sqlite3.connect("embodied.db")
+initialize_embodied_schema(conn)
 
-for r in memory.search("user preferences", user_id="user123").get("results", []):
-    print("-", r.get("memory"))
+# 3. Embodied memory
+em = EmbodiedMemory(memory=pmem, db_conn=conn)
+
+# 4. Add an experience
+atom = MemoryAtom(
+    content="object fell from table",
+    spatial=Vec3(1.0, 0.5, 0.0),
+    temporal=TemporalInterval(5.0, 6.5),
+    prediction_error=2.1,
+)
+mid = em.add_atom(atom)
+
+# 5. Query spatially
+for atom in em.search_near(Vec3(1.0, 0.5, 0.0), radius=1.0):
+    print(atom.content)
 ```
 
-More patterns: [Getting Started](docs/guides/0001-getting_started.md).
-
-### CLI (`pmem`, 1.0+)
-
-```bash
-pmem memory add "User prefers dark mode" --user-id user123
-pmem memory search "preferences" --user-id user123
-pmem shell                           # interactive REPL
-```
-
-Full reference: [CLI usage](docs/guides/0012-cli_usage.md).
-
-### HTTP API server + Dashboard
-
-Uses the same `.env` as the SDK. Dashboard is served under `/dashboard/`.
-
-```bash
-powermem-server --host 0.0.0.0 --port 8000
-```
-
-Docker / Compose: see [API Server](docs/api/0005-api_server.md) and [Docker & deployment](docker/README.md). The official image is `oceanbase/powermem-server:latest`.
+See [`docs/`](docs/) and [`tests/unit/`](tests/unit/) for full examples.
 
 ---
 
-## Capabilities
+## Architecture
 
-**Memory pipeline and retrieval** — [Smart extraction and updates](docs/examples/scenario_2_intelligent_memory.md); [Experience + Skill distillation (self-evolving)](docs/examples/scenario_6_sub_stores.md); [Ebbinghaus-style decay](docs/examples/scenario_8_ebbinghaus_forgetting_curve.md); [Hybrid retrieval (vector / full-text / graph)](docs/examples/scenario_2_intelligent_memory.md); [Sub stores and routing](docs/examples/scenario_6_sub_stores.md).
-
-**Profiles and multi-agent** — [User profile](docs/examples/scenario_9_user_memory.md); [Shared / isolated memory and scopes](docs/examples/scenario_3_multi_agent.md).
-
-**Multimodal** — [Text, image, audio](docs/examples/scenario_7_multimodal.md).
-
-**Provider matrix**
-
-| Layer | Providers (built in) |
-|-------|----------------------|
-| LLM | Anthropic, OpenAI, Azure OpenAI, Gemini, Qwen (+ ASR), DeepSeek, Ollama, vLLM, SiliconFlow, Z.AI, LangChain-wrapped |
-| Embedding | OpenAI, Azure OpenAI, Qwen (+ VL multimodal, sparse), Gemini, Vertex AI, AWS Bedrock, Ollama, LM Studio, HuggingFace, Together, SiliconFlow, Z.AI, OceanBase MASS, LangChain-wrapped |
-| Rerank | Jina, Qwen, Z.AI, generic |
-| Storage | OceanBase (+ graph), embedded SeekDB, PostgreSQL/pgvector, SQLite |
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     RosClaw Memory                           │
+├─────────────────────────────────────────────────────────────┤
+│  gRPC / Python SDK                                          │
+├─────────────────────────────────────────────────────────────┤
+│  EmbodiedMemory                                              │
+│  ├── MemoryAtom (spatial · temporal · perceptual · physical)│
+│  ├── SpatialIndex (VoxelHash)                               │
+│  ├── TemporalIndex (Allen Interval Algebra)                 │
+│  ├── CausalGraph (action → outcome edges)                   │
+│  ├── TrajectoryStore (DTW similarity)                       │
+│  ├── IngestPipeline (Surprisal Gate)                        │
+│  ├── PhysicalModel (FK, collision, constraints)             │
+│  └── PredictiveState (Welford sliding window)               │
+├─────────────────────────────────────────────────────────────┤
+│  PowerMem Core                                               │
+│  ├── Vector + Full-text + Graph retrieval                   │
+│  ├── LLM-driven extraction & distillation                   │
+│  └── Ebbinghaus time decay                                  │
+├─────────────────────────────────────────────────────────────┤
+│  Storage                                                     │
+│  ├── SeekDB (embedded OceanBase)  ←  default                │
+│  ├── PostgreSQL / pgvector                                   │
+│  └── SQLite                                                  │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Docs
+## Project Context
 
-- [Getting started](docs/guides/0001-getting_started.md) — install, `.env`, and first `Memory` usage
-- [Configuration](docs/guides/0003-configuration.md) — settings model, storage backends, environment variables
-- [Architecture](docs/architecture/overview.md) — major components, storage layout, and retrieval flow
-- [API & services](docs/api/overview.md) — REST, MCP, HTTP server, and Python-facing APIs
-- [CLI](docs/guides/0012-cli_usage.md) — `pmem` commands, interactive shell, backup and migration
-- [Multi-agent](docs/guides/0005-multi_agent.md) — scopes, isolation, and cross-agent sharing
-- [Integrations](docs/guides/0009-integrations.md) — LangChain and other framework wiring
-- [Docker & deployment](docker/README.md) — images, Compose, and running the API server
-- [Development](docs/development/overview.md) — local setup, tests, and contributing
+- **Upstream:** [oceanbase/powermem](https://github.com/oceanbase/powermem) — general-purpose persistent memory for AI agents.
+- **This repo:** The embodied extension — everything needed for physical AI (robots, embodied agents, sim-to-real) to remember, reason, and generalize from real-world interaction.
+- **License:** Apache 2.0 (same as PowerMem).
 
-More topics: [Sub stores](docs/guides/0006-sub_stores.md), [guides index](docs/guides/overview.md).
+---
 
-## Examples
+## Why "RosClaw"?
 
-- [Scenarios & notebooks](docs/examples/overview.md) — walkthroughs by use case (basic usage, multimodal, forgetting curve, sparse vectors, sub stores, and more)
-- See [Integrations](#integrations--pick-your-client-copy-one-line) above for client-side and IDE-side entry points (OpenClaw, Claude Code, VS Code extension, MCP, LangChain, LangGraph).
+A claw is a physical end-effector. ROS is the lingua franca of robotics. RosClaw Memory is the *memory layer* that physical agents carry with them — no middleware required, just a brain-like store of what the body has done and felt.
 
-## Release highlights
-
-| Version | Date | Notes |
-|---------|------|--------|
-| 1.2.0 | 2026-04 | Experience + Skill two-layer distillation and `distill_all()` (self-evolving memory; AppWorld +15 pts); OB MASS embedding; Qwen VL multimodal embedding; OceanBase Zero Mode compatibility; LOCOMO accuracy lifted to 87.79% |
-| 1.1.0 | 2026-04-02 | Embedded SeekDB for OceanBase storage without a separate database service; [IDE integrations](apps/README.md) (VS Code extension, Claude Code plugin) |
-| 1.0.0 | 2026-03-16 | CLI (`pmem`): memory ops, config, backup/restore/migrate, interactive shell, completions; Web Dashboard |
-| 0.5.0 | 2026-02-06 | Unified SDK/API config (pydantic-settings); OceanBase native hybrid search; memory query + list sorting; user-profile language customization |
-| 0.4.0 | 2026-01-20 | Sparse vectors for hybrid retrieval; profile-based query rewriting; schema upgrade & migration tools |
-| 0.3.0 | 2026-01-09 | Production HTTP API Server; Docker |
-| 0.2.0 | 2025-12-16 | Advanced profiles; multimodal (text/image/audio) |
-| 0.1.0 | 2025-11-14 | Core memory + hybrid retrieval; LLM extraction; forgetting curve; multi-agent; OceanBase/PostgreSQL/SQLite; graph search |
-
-## Support
-
-- [GitHub Issues](https://github.com/oceanbase/powermem/issues)
-- [GitHub Discussions](https://github.com/oceanbase/powermem/discussions)
+---
 
 ## License
 

@@ -1,256 +1,292 @@
-# PowerMem
+# RosClaw Memory
 
-**面向 AI 应用与智能体的持久化、自进化的记忆层。**
+**面向物理 AI 机器人的具身智能记忆系统**
 
-[![PyPI version](https://img.shields.io/pypi/v/powermem)](https://pypi.org/project/powermem/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/powermem)](https://pypi.org/project/powermem/)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/powermem/)
-[![License Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![GitHub](https://img.shields.io/badge/GitHub-oceanbase%2Fpowermem-181717?logo=github)](https://github.com/oceanbase/powermem)
-[![Discord](https://img.shields.io/badge/Discord-社区-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/74cF8vbNEs)
-
-*[English](README.md) · 中文 · [日本語](README_JP.md)*
-
-PowerMem 融合向量、全文与图检索，由 LLM 驱动记忆抽取，并叠加艾宾浩斯型时间衰减；原生支持**经验 (Experience) + 技能 (Skill) 双层蒸馏**的自进化记忆、多智能体隔离、用户画像，以及文本/图像/音频等多模态线索。
+基于 [PowerMem](https://github.com/oceanbase/powermem) + 嵌入式 SeekDB (OceanBase) 构建。不是替代，而是一个扩展层——为机器人提供脑式的物理世界经验记忆系统。
 
 ---
 
-## 性能基准
+## 设计理念
 
-### [LOCOMO](https://github.com/snap-research/locomo)
-
-| 维度 | PowerMem | 基线 | 提升 |
-|------|----------|--------------------|------|
-| 准确率 | **87.79%** | 52.9% | **+65.9%** |
-| 检索 p95 延迟 | **1.44 s** | 17.12 s | **-91.6%** |
-| Token 开销 | **~0.9 k** | 26 k | **-96.5%** |
-
-### [AppWorld](https://github.com/StonyBrookNLP/appworld)
-
-| 维度 | PowerMem | 基线 | 提升 |
-|------|----------|----------------------|------|
-| 通过率 | **39%** | 24% | **+62.5%** |
-| 平均步数 | **6.2** | 9.5 | **-34.7%** |
-| 总 Token | **1.74 M** | 2.56 M | **-32.0%** |
-
-复现脚本：[`benchmark/`](benchmark/)。背后机制：**Experience + Skill 双层蒸馏 + 4 路混合检索 + LLM 自归并**（API: `memory.distill_all() / add_skill / add_experience / search_*`，示例 [`examples/experience_skill_usage.py`](examples/experience_skill_usage.py)）。
+- **类脑架构** —— 记忆不是数据库表，而是一个时空因果图，带有预测状态、惊奇检测与联想检索。
+- **零 ROS 依赖** —— 不强绑定任何中间件。gRPC + 纯 Python SDK，可在 C++、Rust、Go、Python 中调用。
+- **第一性原理** —— 每个功能都从"物理智能体如何记忆？"出发，而不是"Web 应用如何缓存？"
+- **构建于 PowerMem 之上** —— 我们继承向量检索、全文检索、图边、LLM 驱动抽取与艾宾浩斯衰减。我们新增的是 *具身* 维度：空间、时间、物理与身体。
 
 ---
 
-## 集成 — 选客户端，复制一行命令即可接入
+## 它能做什么
 
-PowerMem 为最常见的 AI 客户端提供了一方插件。所有插件共用同一个后端（HTTP 服务或本地 `pmem` CLI），无需为每个客户端单独改配置。
+RosClaw Memory 将原始机器人经验——传感器帧、轨迹、碰撞、约束、因果结果——转化为可查询、可泛化的记忆原子。
 
-| 客户端 / 框架 | 一行接入命令 | 模式 |
-|---------------|--------------|------|
-| OpenClaw（ClawdBot） | `openclaw plugins install memory-powermem` | CLI（默认）/ HTTP（可选） |
-| Claude Code | `git clone https://github.com/oceanbase/powermem && claude --plugin-dir powermem/apps/claude-code-plugin` | HTTP（默认）/ MCP（可选） |
-| Cursor / VS Code / Codex / Windsurf / GitHub Copilot | 安装 [PowerMem VS Code 扩展](apps/vscode-extension/) 后运行 **PowerMem: Link to AI tools** | MCP 或 HTTP，按客户端而定 |
-| Claude Desktop / Cline / 任意 MCP 客户端 | `uvx powermem-mcp sse` | MCP（SSE / stdio / streamable-http） |
-| LangChain / LangGraph | `pip install powermem`，参考 [示例](#示例) | Python SDK |
-| Go / Java / TypeScript 应用 | 见下方 [多语言 SDK](#多语言-sdk) | HTTP REST |
-
-### OpenClaw（ClawdBot）
-
-[OpenClaw](https://github.com/openclaw/openclaw) 通过插件 [`memory-powermem`](https://github.com/ob-labs/memory-powermem) 获得长期记忆。
-
-```bash
-openclaw plugins install memory-powermem
 ```
-
-**默认 CLI 模式** — 插件内部直接调用打包好的 `pmem`，把数据写入 `~/.openclaw/` 下的 SQLite，并复用 OpenClaw 已注入的模型；**不需要额外启动服务，也不需要单独配 `.env`**。如需团队共享后端，切换到 **HTTP 模式** 即可（在插件 `config` 中配置 `mode: "http"` 与 `requestConfig.memory_db`）。详情见插件仓库 README。
-
-<div align="center">
-
-<img src="docs/images/openclaw_powermem.jpeg" alt="PowerMem 与 OpenClaw" width="640"/>
-
-</div>
-
-### Claude Code
-
-```bash
-# 从本仓库直接加载（开发/调试推荐）
-claude --plugin-dir /path/to/powermem/apps/claude-code-plugin
-
-# 或者打包成 zip 发到目标机器，再 --plugin-dir 指向解压目录
-make package-claude-plugin   # 产物：apps/claude-code-plugin/dist/<version>.zip
+传感器流 → 惊奇门控 → 记忆原子 → 空间索引
+                                              ↓
+                                     时间索引 → 因果图
+                                              ↓
+                                    具身记忆层 (gRPC / Python)
 ```
-
-默认 **HTTP 模式**，开箱即用：
-
-- `UserPromptSubmit` → `POST /api/v1/memories/search`，命中结果通过 `additionalContext` 注入当前对话；
-- `SessionEnd` / `PostCompact` → `POST /api/v1/memories`，把整段对话或压缩摘要写回记忆；
-- 终端机器**无需 Python**，hook 是预编译的原生二进制（macOS / Linux / Windows）。
-
-如果想让 Claude 在对话中显式调用 `search_memories` / `add_memory` 工具，切到 **MCP 模式** 即可：
-
-```bash
-bash scripts/apply-connection-mode.sh mcp
-```
-
-完整说明：[`apps/claude-code-plugin/README.md`](apps/claude-code-plugin/README.md)。
-
-### Cursor / VS Code / Codex / Windsurf / GitHub Copilot
-
-安装一次 **PowerMem VS Code 扩展**（在 VS Code 和 Cursor 中都能用），然后执行 **PowerMem: Link to AI tools** 命令 — 扩展会自动给每个支持的客户端写好 MCP 或 HTTP 配置：
-
-| 客户端 | 写入的配置文件 |
-|--------|----------------|
-| Cursor | `~/.cursor/mcp.json`（合并写入） |
-| Claude（Desktop / Code） | `~/.claude/providers/powermem.json` |
-| Codex | `~/.codex/context.json`（合并写入） |
-| Windsurf | `~/.windsurf/context/powermem.json` |
-| GitHub Copilot | `~/.github/copilot/powermem.json` |
-
-同一扩展还提供 **Query memories**、**Add selection to memory**、**Quick note** 命令，以及状态栏 **Dashboard**。详见 [`apps/vscode-extension/README.md`](apps/vscode-extension/README.md)。
-
-### 任意 MCP 客户端（Claude Desktop、Cline……）
-
-```bash
-uvx powermem-mcp sse                  # SSE，默认 :8000（推荐）
-uvx powermem-mcp stdio                # stdio
-uvx powermem-mcp streamable-http      # streamable HTTP
-```
-
-Claude Desktop / 多数 MCP 客户端的配置：
-
-```json
-{
-  "mcpServers": {
-    "powermem": { "url": "http://localhost:8000/mcp" }
-  }
-}
-```
-
-暴露的工具：`add_memory`、`search_memories`、`get_memory_by_id`、`update_memory`、`delete_memory`、`delete_all_memories`、`list_memories`。完整参考：[MCP Server](docs/api/0004-mcp.md)。
-
-### LangChain & LangGraph
-
-```bash
-pip install powermem langchain langchain-openai
-```
-
-端到端可跑示例：
-
-- [LangChain 医疗问答 Bot](examples/langchain/README.md)
-- [LangGraph 客服机器人](examples/langgraph/README.md)
-
-### 多语言 SDK
-
-| 语言 | 包 / 仓库 |
-|------|-----------|
-| Python | `pip install powermem`（本仓库） |
-| Go | [`ob-labs/powermem-go`](https://github.com/ob-labs/powermem-go) |
-| Java | [`ob-labs/powermem-java`](https://github.com/ob-labs/powermem-java) |
-| TypeScript | [`ob-labs/powermem-ts`](https://github.com/ob-labs/powermem-ts) |
 
 ---
 
-## 快速开始（Python SDK）
+## 核心能力
 
-**前置条件：** 将 [.env.example](.env.example) 复制为 `.env`，配置 **LLM** 与 **向量嵌入** 凭证。默认数据库是 SQLite；OceanBase 后端可使用 **嵌入式 SeekDB**，不必额外部署数据库进程。安装后执行 `pmem config init` 可交互式生成同样的配置。详见 [入门指南](docs/guides/0001-getting_started.md)。
+### 1. 具身记忆原子 (MemoryAtom)
 
-### 安装
+统一记忆原语，包含六个维度：
+
+| 维度 | 字段 | 示例 |
+|------|------|------|
+| **空间** | `Vec3(x, y, z)` + frame_id | 这件事发生在哪里？ |
+| **时间** | `TemporalInterval(start, end)` + frame_id | 这件事发生在何时？ |
+| **感知** | `Modality` (RGB、深度、激光雷达、触觉、音频、本体感觉) | 感知到了什么？ |
+| **物理** | `CollisionBody`、`JointLimit`、`PhysicalConstraint` | 涉及什么身体状态？ |
+| **不确定性** | `prediction_error`、`information_gain` | 这件事有多令人惊讶？ |
+| **情感** | `affective_tags` (好奇、疼痛、满足) | 它的情感效价是什么？ |
+
+```python
+from powermem.embodied import MemoryAtom, Vec3, TemporalInterval, Modality
+
+atom = MemoryAtom(
+    content="抓起了红色方块",
+    spatial=Vec3(0.5, -0.2, 0.1),
+    temporal=TemporalInterval(12.5, 14.0, frame_id="session_01"),
+    modality=Modality.TACTILE,
+    prediction_error=0.85,  # 高惊讶 → 强记忆编码
+)
+```
+
+### 2. 多格式机器人模型解析
+
+无需 ROS 即可加载机器人描述文件：
+
+```python
+from powermem.embodied.parsers import parse_model
+
+result = parse_model(open("franka.urdf").read())   # URDF
+result = parse_model(open("anymal.xml").read())    # MJCF
+result = parse_model(open("scene.usda").read())    # OpenUSD
+```
+
+支持格式：**URDF、MJCF、SDF、Xacro、OpenUSD**（模块懒加载）。
+
+### 3. 碰撞检测与运动学
+
+```python
+from powermem.embodied.embodied_memory import EmbodiedMemory
+
+em = EmbodiedMemory(memory=pmem, db_conn=conn)
+
+# 正运动学
+fk = em.forward_kinematics("panda", joint_angles=[0, -0.5, 0, -1.8, 0, 1.5, 0])
+
+# 自碰撞检测
+pairs = em.check_self_collision("panda")
+# → [CollisionPair(link_a="panda_link4", link_b="panda_link6", distance=-0.012)]
+```
+
+碰撞几何：球体、胶囊体、AABB。Broad-phase AABB 树 + 解析 narrow-phase。
+
+### 4. 时间推理 (Allen 区间代数)
+
+13 种区间关系，用于因果和时间查询：
+
+```python
+from powermem.embodied.types import TemporalInterval, IntervalRelation
+
+# 查找发生在某段时间内的所有记忆
+results = em.search_temporal(
+    interval=TemporalInterval(10.0, 20.0),
+    relation=IntervalRelation.DURING,
+)
+```
+
+### 5. 空间索引 (Voxel Hash)
+
+记忆原子的 O(1) 空间查询：
+
+```python
+# 查询某点半径 0.5m 内的所有记忆
+neighbors = em.search_near(center=Vec3(1.0, 0.0, 0.0), radius=0.5)
+```
+
+### 6. 轨迹相似性检索 (DTW)
+
+查找历史上相似的轨迹——对"我以前做过这个抓取动作吗？"至关重要。
+
+```python
+waypoints = [
+    (Vec3(0, 0, 0), 0.0),
+    (Vec3(0.1, 0.2, 0.3), 1.0),
+    (Vec3(0.2, 0.4, 0.5), 2.0),
+]
+
+# 记录轨迹，之后按形状相似度检索
+mid = em.record_trajectory("从左侧接近", waypoints)
+
+similar = em.search_similar_trajectories(
+    query_waypoints=new_waypoints,
+    top_k=5,
+    max_dtw_distance=0.3,
+)
+# → [(MemoryAtom, dtw_distance), ...]
+```
+
+- **粗过滤** —— 轨迹特征签名（持续时间、长度、包围盒、主方向）
+- **精排序** —— 动态时间规整 (DTW)，可选 Sakoe-Chiba 带宽约束
+- **归一化距离** —— 不同长度轨迹之间可比
+
+### 7. 因果图
+
+将动作与结果关联：
+
+```python
+cause_id = em.add_atom(MemoryAtom(content="电机过热"))
+effect_id = em.add_atom(MemoryAtom(content="夹爪打滑", causal_parents=[cause_id]))
+
+causes = em.get_causes(effect_id)   # → ["电机过热"]
+effects = em.get_effects(cause_id)  # → ["夹爪打滑"]
+```
+
+### 8. 预测状态与惊奇门控
+
+只有令人惊讶的经验才会成为长期记忆。滑动 Welford 窗口计算 3-sigma 动态阈值。
+
+```python
+from powermem.embodied.ingest_pipeline import SensorFrame, Modality
+
+frame = SensorFrame(
+    modality=Modality.PROPRICEPTION,
+    timestamp_sec=10.5,
+    data=[0.12, 0.34, 0.56],
+)
+mid = em.ingest(frame, content="关节力矩异常")
+# 若 prediction_error > 3σ，则存储；否则被门控过滤
+```
+
+### 9. 物理约束记忆化
+
+```python
+constraint = PhysicalConstraint(
+    constraint_type="no_fly_zone",
+    region=AABB(min=Vec3(0,0,0), max=Vec3(1,1,1)),
+)
+em.add_constraint(constraint)
+```
+
+约束以 MemoryAtom 形式存储，并按空间区域索引。
+
+### 10. gRPC 服务
+
+将完整 `EmbodiedMemory` API 暴露给 C++、Rust、Go 或任何支持 gRPC 的栈：
+
+```python
+from powermem.embodied.grpc.server import serve
+
+server = serve(memory=pmem, db_conn=conn, port=50051)
+server.wait_for_termination()
+```
+
+Python 客户端助手：
+
+```python
+from powermem.embodied.grpc.client import EmbodiedMemoryClient
+
+with EmbodiedMemoryClient("localhost:50051") as client:
+    mid = client.add_atom(atom)
+    results = client.search_similar_trajectories(waypoints, top_k=5)
+```
+
+支持的 RPC：`AddAtom`、`GetAtom`、`DeleteAtom`、`Search`、`SearchNear`、`SearchTemporal`、`RecordTrajectory`、`SearchSimilarTrajectories`、`IngestSensorFrame`、`SaveModel`、`CheckSelfCollision`、`GetCauses`、`GetEffects`、`GetStats`。
+
+---
+
+## 快速开始
 
 ```bash
 pip install powermem
 ```
 
-### SDK 用法
-
-在含已配置 `.env` 的目录下运行：
-
 ```python
-from powermem import Memory, auto_config
+import sqlite3
+from powermem.core.memory import Memory, auto_config
+from powermem.embodied.embodied_memory import EmbodiedMemory
+from powermem.embodied.schema import initialize_embodied_schema
 
-memory = Memory(config=auto_config())
+# 1. PowerMem 核心
+pmem = Memory(config=auto_config())
 
-memory.add("用户喜欢咖啡", user_id="user123")
+# 2. SQLite 具身层
+conn = sqlite3.connect("embodied.db")
+initialize_embodied_schema(conn)
 
-for r in memory.search("用户偏好", user_id="user123").get("results", []):
-    print("-", r.get("memory"))
+# 3. 具身记忆
+em = EmbodiedMemory(memory=pmem, db_conn=conn)
+
+# 4. 添加一条经验
+atom = MemoryAtom(
+    content="物体从桌上掉落",
+    spatial=Vec3(1.0, 0.5, 0.0),
+    temporal=TemporalInterval(5.0, 6.5),
+    prediction_error=2.1,
+)
+mid = em.add_atom(atom)
+
+# 5. 空间查询
+for atom in em.search_near(Vec3(1.0, 0.5, 0.0), radius=1.0):
+    print(atom.content)
 ```
 
-更多用法见 [入门指南](docs/guides/0001-getting_started.md)。
-
-### CLI（`pmem`，1.0+）
-
-```bash
-pmem memory add "用户偏好深色模式" --user-id user123
-pmem memory search "偏好" --user-id user123
-pmem shell                           # 交互式 REPL
-```
-
-完整说明：[CLI 使用指南](docs/guides/0012-cli_usage.md)。
-
-### HTTP API Server + Dashboard
-
-与 SDK 共用 `.env`，Dashboard 路径 `/dashboard/`。
-
-```bash
-powermem-server --host 0.0.0.0 --port 8000
-```
-
-Docker / Compose 部署见 [API Server](docs/api/0005-api_server.md) 与 [Docker 说明](docker/README.md)。官方镜像：`oceanbase/powermem-server:latest`。
+完整示例见 [`docs/`](docs/) 和 [`tests/unit/`](tests/unit/)。
 
 ---
 
-## 能力概览
+## 架构
 
-**记忆管线与检索** — [智能抽取与更新](docs/examples/scenario_2_intelligent_memory.md)；[Experience + Skill 双层蒸馏（自进化）](docs/examples/scenario_6_sub_stores.md)；[艾宾浩斯时间衰减](docs/examples/scenario_8_ebbinghaus_forgetting_curve.md)；[混合检索（向量 / 全文 / 图）](docs/examples/scenario_2_intelligent_memory.md)；[子存储与路由](docs/examples/scenario_6_sub_stores.md)。
-
-**用户画像与多智能体** — [用户画像](docs/examples/scenario_9_user_memory.md)；[共享 / 隔离记忆与作用域](docs/examples/scenario_3_multi_agent.md)。
-
-**多模态** — [文本 / 图像 / 语音](docs/examples/scenario_7_multimodal.md)。
-
-**Provider 矩阵**
-
-| 层 | 已内置的 Provider |
-|----|-------------------|
-| LLM | Anthropic、OpenAI、Azure OpenAI、Gemini、Qwen（+ ASR 语音）、DeepSeek、Ollama、vLLM、SiliconFlow、Z.AI、LangChain 包装层 |
-| Embedding | OpenAI、Azure OpenAI、Qwen（+ VL 多模态、稀疏向量）、Gemini、Vertex AI、AWS Bedrock、Ollama、LM Studio、HuggingFace、Together、SiliconFlow、Z.AI、OceanBase MASS、LangChain 包装层 |
-| Rerank | Jina、Qwen、Z.AI、通用接口 |
-| Storage | OceanBase（含图存储）、嵌入式 SeekDB、PostgreSQL/pgvector、SQLite |
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     RosClaw Memory                           │
+├─────────────────────────────────────────────────────────────┤
+│  gRPC / Python SDK                                          │
+├─────────────────────────────────────────────────────────────┤
+│  EmbodiedMemory                                              │
+│  ├── MemoryAtom (空间 · 时间 · 感知 · 物理)                 │
+│  ├── SpatialIndex (VoxelHash)                               │
+│  ├── TemporalIndex (Allen 区间代数)                         │
+│  ├── CausalGraph (动作 → 结果 边)                           │
+│  ├── TrajectoryStore (DTW 相似度)                           │
+│  ├── IngestPipeline (惊奇门控)                              │
+│  ├── PhysicalModel (正运动学、碰撞、约束)                   │
+│  └── PredictiveState (Welford 滑动窗口)                     │
+├─────────────────────────────────────────────────────────────┤
+│  PowerMem Core                                               │
+│  ├── 向量 + 全文 + 图检索                                   │
+│  ├── LLM 驱动抽取与蒸馏                                     │
+│  └── 艾宾浩斯时间衰减                                       │
+├─────────────────────────────────────────────────────────────┤
+│  Storage                                                     │
+│  ├── SeekDB (嵌入式 OceanBase)  ←  默认                     │
+│  ├── PostgreSQL / pgvector                                   │
+│  └── SQLite                                                  │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 文档
+## 项目背景
 
-- [入门指南](docs/guides/0001-getting_started.md) — 安装、`.env`、首个 `Memory` 用法
-- [配置指南](docs/guides/0003-configuration.md) — 配置模型、存储后端、环境变量
-- [架构说明](docs/architecture/overview.md) — 组件、存储布局与检索流程
-- [API 与服务](docs/api/overview.md) — REST、MCP、HTTP 服务与 Python 侧 API
-- [CLI 使用指南](docs/guides/0012-cli_usage.md) — `pmem`、交互 Shell、备份与迁移
-- [多智能体](docs/guides/0005-multi_agent.md) — 作用域、隔离与跨智能体共享
-- [集成说明](docs/guides/0009-integrations.md) — LangChain 等框架接入
-- [Docker 与部署](docker/README.md) — 镜像、Compose、运行 API 服务
-- [开发说明](docs/development/overview.md) — 本地开发、测试与贡献
+- **上游项目：** [oceanbase/powermem](https://github.com/oceanbase/powermem) —— 面向 AI 智能体的通用持久化记忆。
+- **本仓库：** 具身扩展层——为物理 AI（机器人、具身智能体、sim-to-real）提供记忆、推理与泛化真实世界交互所需的一切。
+- **许可证：** Apache 2.0（与 PowerMem 一致）。
 
-更多：[子存储](docs/guides/0006-sub_stores.md)、[指南索引](docs/guides/overview.md)。
+---
 
-## 示例
+## 为什么叫 "RosClaw"？
 
-- [场景与 Notebook](docs/examples/overview.md) — 按场景分步说明（基础用法、多模态、遗忘曲线、稀疏向量、子存储等）
-- 客户端 / IDE 侧入口（OpenClaw、Claude Code、VS Code 扩展、MCP、LangChain、LangGraph）见上方 [集成](#集成--选客户端复制一行命令即可接入) 一节。
+Claw（爪）是物理末端执行器。ROS 是机器人领域的事实标准。RosClaw Memory 是物理智能体随身携带的 *记忆层*——不需要中间件，只是一个关于身体做过什么、感受过什么的脑式存储。
 
-## 版本要点
-
-| 版本 | 日期 | 说明 |
-|------|------|------|
-| 1.2.0 | 2026-04 | Experience + Skill 双层蒸馏与 `distill_all()`（自进化记忆，AppWorld +15 pts）；OB MASS Embedding；Qwen VL 多模态 Embedding；OceanBase Zero Mode 兼容；LOCOMO 准确率提升至 87.79% |
-| 1.1.0 | 2026-04-02 | OceanBase 存储支持嵌入式 SeekDB，无需单独部署数据库服务；[IDE 集成](apps/README.md)（VS Code 扩展、Claude Code 插件） |
-| 1.0.0 | 2026-03-16 | CLI（`pmem`）：记忆操作、配置、备份/恢复/迁移、交互 Shell、补全；Web Dashboard |
-| 0.5.0 | 2026-02-06 | SDK/API 统一配置（pydantic-settings）；OceanBase 原生混合检索；记忆查询与列表排序；用户画像输出语言定制 |
-| 0.4.0 | 2026-01-20 | 稀疏向量混合检索；基于画像的查询改写；表结构升级与迁移工具 |
-| 0.3.0 | 2026-01-09 | 生产级 HTTP API Server；Docker |
-| 0.2.0 | 2025-12-16 | 高级画像；多模态（文本/图像/语音） |
-| 0.1.0 | 2025-11-14 | 核心记忆与混合检索；LLM 抽取；遗忘曲线；多智能体；OceanBase/PostgreSQL/SQLite；图检索 |
-
-## 支持
-
-- [GitHub Issues](https://github.com/oceanbase/powermem/issues)
-- [GitHub Discussions](https://github.com/oceanbase/powermem/discussions)
+---
 
 ## 许可证
 
-Apache License 2.0 — 见 [LICENSE](LICENSE)。
+Apache License 2.0 —— 详见 [LICENSE](LICENSE)。
