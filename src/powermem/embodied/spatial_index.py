@@ -87,11 +87,28 @@ class VoxelHash:
         cz = int(math.floor(center.z / vs))
 
         candidates: Set[int] = set()
-        for dx in range(-r_cells, r_cells + 1):
-            for dy in range(-r_cells, r_cells + 1):
-                for dz in range(-r_cells, r_cells + 1):
-                    key = self._key(cx + dx, cy + dy, cz + dz, frame_id)
-                    candidates.update(self._buckets.get(key, set()))
+        total_voxels = (2 * r_cells + 1) ** 3
+        suffix = f":{frame_id}"
+
+        # 稀疏数据优化：当存储对象数远少于需扫描体素数时，直接遍历对象而非空体素
+        if len(self._id_to_key) < total_voxels:
+            for memory_id, key in self._id_to_key.items():
+                if not key.endswith(suffix):
+                    continue
+                # key format: "vx:vy:vz:frame_id"
+                vx_str, vy_str, vz_str, _ = key.split(":")
+                if (
+                    abs(int(vx_str) - cx) <= r_cells
+                    and abs(int(vy_str) - cy) <= r_cells
+                    and abs(int(vz_str) - cz) <= r_cells
+                ):
+                    candidates.add(memory_id)
+        else:
+            for dx in range(-r_cells, r_cells + 1):
+                for dy in range(-r_cells, r_cells + 1):
+                    for dz in range(-r_cells, r_cells + 1):
+                        key = self._key(cx + dx, cy + dy, cz + dz, frame_id)
+                        candidates.update(self._buckets.get(key, set()))
         return candidates
 
     def query_exact(
