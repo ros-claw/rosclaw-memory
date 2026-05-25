@@ -57,6 +57,7 @@ dependencies = [
     "pyseekdb>=0.1.0",
     "grpcio>=1.60.0",
     "grpcio-tools>=1.60.0",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -109,6 +110,7 @@ powermem-server = "server.cli.server:server"
 pmem = "powermem.cli.main:cli"
 powermem-cli = "powermem.cli.main:cli"
 powermem-embodied-server = "powermem.embodied.grpc.cli:embodied_server"
+powermem-mcp-server = "powermem.mcp.cli:mcp_server"
 
 [tool.black]
 line-length = 88
