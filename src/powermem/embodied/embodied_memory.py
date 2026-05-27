@@ -35,6 +35,7 @@ from .trajectory_similarity import (
 )
 from .types import IntervalRelation, MemoryAction, Pose, Quaternion, SpatialRelation, TemporalInterval, Vec3, WorldObject
 from .world_object_store import WorldObjectStore
+from .cognitive_router import CognitiveRouter
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,9 @@ class EmbodiedMemory:
 
         # 世界对象存储
         self.world_object_store = WorldObjectStore(db_conn)
+
+        # Tri-Route 认知检索路由器
+        self._router = CognitiveRouter(self)
 
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
@@ -273,52 +277,20 @@ class EmbodiedMemory:
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 30,
     ) -> List[MemoryAtom]:
-        """混合检索：语义 + 空间 + 时间
+        """Tri-Route 认知检索入口（System-1 + System-2 + System-3）
 
-        策略：
-        1. 先用 PowerMem 语义检索获取候选集
-        2. 如有空间约束，用空间索引过滤
-        3. 如有时间约束，用时间索引过滤
-        4. 取交集，按综合得分排序
+        由 CognitiveRouter 调度三路正交路由，取交集后综合重排。
+        原有"语义+空间+时间"的串联过滤逻辑已升级为并行的认知路由架构。
         """
-        # 1. 语义检索
-        semantic_result = self.memory.search(query, filters=filters, limit=limit * 3)
-        candidates: Dict[int, Dict[str, Any]] = {}
-        for item in semantic_result.get("results", []):
-            mid = item.get("id")
-            if mid is not None:
-                candidates[int(mid)] = {"semantic_score": item.get("score", 0.0), "raw": item}
-
-        # 2. 空间过滤
-        if spatial_center is not None and spatial_radius is not None:
-            spatial_hits = self.spatial_index.query_radius(
-                spatial_center, spatial_radius, limit=limit * 3
-            )
-            spatial_ids = {mid for mid, _ in spatial_hits}
-            candidates = {k: v for k, v in candidates.items() if k in spatial_ids}
-
-        # 3. 时间过滤
-        if temporal_interval is not None:
-            if temporal_relation is None:
-                temporal_hits = self.temporal_index.query_overlapping(
-                    temporal_interval, limit=limit * 3
-                )
-            else:
-                temporal_hits = self.temporal_index.query(
-                    temporal_interval, temporal_relation, limit=limit * 3
-                )
-            temporal_ids = {mid for mid, _ in temporal_hits}
-            candidates = {k: v for k, v in candidates.items() if k in temporal_ids}
-
-        # 4. 加载为 MemoryAtom 并排序（简单策略：语义分降序）
-        results: List[Tuple[MemoryAtom, float]] = []
-        for mid, info in candidates.items():
-            atom = self.get_atom(mid)
-            if atom:
-                results.append((atom, info["semantic_score"]))
-
-        results.sort(key=lambda x: x[1], reverse=True)
-        return [atom for atom, _ in results[:limit]]
+        return self._router.search(
+            query=query,
+            spatial_center=spatial_center,
+            spatial_radius=spatial_radius,
+            temporal_interval=temporal_interval,
+            temporal_relation=temporal_relation,
+            filters=filters,
+            limit=limit,
+        )
 
     def search_near(
         self,
@@ -525,6 +497,18 @@ class EmbodiedMemory:
         )
         atom.causal_parents = [action_id]
         outcome_id = self.add_atom(atom)
+
+        # 自动在经验图中建立 action -> outcome 边（System-2 基础设施）
+        try:
+            self.add_experience_edge(
+                source_memory_id=action_id,
+                target_memory_id=outcome_id,
+                edge_type="causes",
+                strength=1.0,
+            )
+        except Exception:
+            pass  # 经验图写入失败不应阻塞结果记录
+
         return outcome_id
 
     def search_similar_experiences(
@@ -1115,6 +1099,42 @@ class EmbodiedMemory:
             if atom:
                 atoms.append(atom)
         return atoms
+
+    # ========================================================================
+    # 经验图与概念索引（Tri-Route System-2 基础设施）
+    # ========================================================================
+
+    def index_concept(
+        self,
+        memory_id: int,
+        dimension: str,
+        layer: int,
+        concept_id: str,
+        confidence: float = 1.0,
+    ) -> None:
+        """为指定记忆添加概念索引条目（支撑 System-2 Global Selection）"""
+        self._router.index_concept(memory_id, dimension, layer, concept_id, confidence)
+
+    def add_experience_edge(
+        self,
+        source_memory_id: int,
+        target_memory_id: int,
+        edge_type: str,
+        strength: float = 1.0,
+        spatial_context: Optional[Dict[str, Any]] = None,
+        temporal_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """在物理经验图中添加一条关系边
+
+        Args:
+            edge_type: 必须为物理关系之一：
+                causes, precedes, supports, contains, instantiates,
+                part_of, adjacent_to, overlaps_temporally
+        """
+        self._router.add_experience_edge(
+            source_memory_id, target_memory_id, edge_type, strength,
+            spatial_context, temporal_context,
+        )
 
     # ========================================================================
     # 生命周期

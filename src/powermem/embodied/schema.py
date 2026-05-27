@@ -203,6 +203,54 @@ _SPATIAL_RELATION_INDEXES: List[str] = [
     "CREATE INDEX IF NOT EXISTS idx_rel_pair ON embodied_spatial_relations(subject_id, object_id)",
 ]
 
+# --- 物理经验图（Memory of World 的关系边） ---
+# 边类型限定为物理世界原生关系，拒绝通用语义边（如 related_to）
+
+_EXPERIENCE_GRAPH_DDL = """
+CREATE TABLE IF NOT EXISTS embodied_experience_graph (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source_memory_id    BIGINT NOT NULL,
+    target_memory_id    BIGINT NOT NULL,
+    edge_type           VARCHAR(32) NOT NULL,
+    strength            DOUBLE DEFAULT 1.0,
+    spatial_context_json TEXT,                        -- 关系发生时的空间上下文
+    temporal_context_json TEXT,                       -- 关系发生时的时间上下文
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_memory_id) REFERENCES embodied_memories(memory_id) ON DELETE CASCADE,
+    FOREIGN KEY (target_memory_id) REFERENCES embodied_memories(memory_id) ON DELETE CASCADE,
+    CHECK (edge_type IN ('causes', 'precedes', 'supports', 'contains', 'instantiates', 'part_of', 'adjacent_to', 'overlaps_temporally'))
+)
+"""
+
+_EXPERIENCE_GRAPH_INDEXES: List[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_expgraph_source ON embodied_experience_graph(source_memory_id)",
+    "CREATE INDEX IF NOT EXISTS idx_expgraph_target ON embodied_experience_graph(target_memory_id)",
+    "CREATE INDEX IF NOT EXISTS idx_expgraph_type ON embodied_experience_graph(edge_type)",
+    "CREATE INDEX IF NOT EXISTS idx_expgraph_pair ON embodied_experience_graph(source_memory_id, target_memory_id)",
+]
+
+# --- 多维度抽象索引（经验抽象树的分形层级） ---
+# 一个 memory_id 可在不同 dimension 中属于不同 concept
+
+_CONCEPT_INDEX_DDL = """
+CREATE TABLE IF NOT EXISTS embodied_concept_index (
+    memory_id       BIGINT NOT NULL,
+    dimension       VARCHAR(32) NOT NULL,           -- 'task' | 'physics' | 'spatial_region' | 'social'
+    layer           INT NOT NULL,                   -- 层级深度（1=最具体）
+    concept_id      VARCHAR(128) NOT NULL,
+    confidence      DOUBLE DEFAULT 1.0,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (memory_id, dimension, concept_id),
+    FOREIGN KEY (memory_id) REFERENCES embodied_memories(memory_id) ON DELETE CASCADE
+)
+"""
+
+_CONCEPT_INDEX_INDEXES: List[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_concept_dim_layer ON embodied_concept_index(dimension, layer)",
+    "CREATE INDEX IF NOT EXISTS idx_concept_concept ON embodied_concept_index(concept_id)",
+    "CREATE INDEX IF NOT EXISTS idx_concept_memory ON embodied_concept_index(memory_id)",
+]
+
 # --- 物理模型库表（机器人/环境骨架） ---
 
 _PHYSICAL_MODELS_DDL = """
@@ -238,6 +286,8 @@ ALL_DDL = [
     _PREDICTIVE_STATE_DDL,
     _WORLD_OBJECTS_DDL,
     _SPATIAL_RELATIONS_DDL,
+    _EXPERIENCE_GRAPH_DDL,
+    _CONCEPT_INDEX_DDL,
     _PHYSICAL_MODELS_DDL,
 ]
 
@@ -248,6 +298,8 @@ ALL_INDEXES = (
     + _CAUSAL_INDEXES
     + _WORLD_OBJECT_INDEXES
     + _SPATIAL_RELATION_INDEXES
+    + _EXPERIENCE_GRAPH_INDEXES
+    + _CONCEPT_INDEX_INDEXES
     + _PHYSICAL_MODEL_INDEXES
 )
 
@@ -341,6 +393,21 @@ def get_dialect_ddl(dialect: str = "seekdb") -> tuple[List[str], List[str]]:
             .replace("BIGINT AUTO_INCREMENT PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
             .replace("VARCHAR(128)", "TEXT")
             .replace("VARCHAR(32)", "TEXT")
+            .replace("DOUBLE", "REAL"),
+            _EXPERIENCE_GRAPH_DDL
+            .replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))")
+            .replace("BIGINT AUTO_INCREMENT PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+            .replace("BIGINT", "INTEGER")
+            .replace("VARCHAR(32)", "TEXT")
+            .replace("DOUBLE", "REAL")
+            .replace("    CHECK (edge_type IN ('causes', 'precedes', 'supports', 'contains', 'instantiates', 'part_of', 'adjacent_to', 'overlaps_temporally'))\n", "")
+            .replace(",\n)", "\n)"),
+            _CONCEPT_INDEX_DDL
+            .replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))")
+            .replace("BIGINT", "INTEGER")
+            .replace("VARCHAR(32)", "TEXT")
+            .replace("VARCHAR(128)", "TEXT")
+            .replace("INT", "INTEGER")
             .replace("DOUBLE", "REAL"),
             _PHYSICAL_MODELS_DDL
             .replace("TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))")
