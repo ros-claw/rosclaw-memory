@@ -393,3 +393,87 @@ class TestGrpcWorldObjects:
         assert len(on_rels) == 1
         assert on_rels[0].subject_id == "cup"
         assert on_rels[0].object_id == "table"
+
+
+class TestGrpcCognitiveSearch:
+    def test_cognitive_search_basic(self, client):
+        client.add_atom(MemoryAtom(content="test search", spatial=Vec3(1, 2, 3)))
+        results = client.cognitive_search(query="search")
+        contents = [r.content for r in results]
+        assert "test search" in contents
+
+    def test_cognitive_search_with_spatial(self, client):
+        client.add_atom(MemoryAtom(content="nearby", spatial=Vec3(0, 0, 0)))
+        client.add_atom(MemoryAtom(content="faraway", spatial=Vec3(100, 0, 0)))
+
+        results = client.cognitive_search(
+            query="memory",
+            spatial_center=Vec3(0, 0, 0),
+            spatial_radius=2.0,
+        )
+        contents = [r.content for r in results]
+        assert "nearby" in contents
+        assert "faraway" not in contents
+
+    def test_cognitive_search_with_temporal(self, client):
+        client.add_atom(MemoryAtom(
+            content="morning event",
+            temporal=TemporalInterval(8.0, 10.0),
+        ))
+        client.add_atom(MemoryAtom(
+            content="night event",
+            temporal=TemporalInterval(20.0, 22.0),
+        ))
+
+        results = client.cognitive_search(
+            query="event",
+            temporal_interval=TemporalInterval(9.0, 11.0),
+        )
+        contents = [r.content for r in results]
+        assert "morning event" in contents
+        assert "night event" not in contents
+
+
+class TestGrpcConceptAndExperienceGraph:
+    def test_index_concept(self, client):
+        mid = client.add_atom(MemoryAtom(content="concept test"))
+        ok = client.index_concept(
+            memory_id=mid,
+            dimension="task",
+            layer=2,
+            concept_id="grasp_mug",
+            confidence=0.95,
+        )
+        assert ok is True
+
+    def test_add_experience_edge(self, client):
+        source = client.add_atom(MemoryAtom(content="action"))
+        target = client.add_atom(MemoryAtom(content="outcome"))
+        ok = client.add_experience_edge(
+            source_memory_id=source,
+            target_memory_id=target,
+            edge_type="causes",
+            strength=0.9,
+        )
+        assert ok is True
+
+
+class TestGrpcMeditation:
+    def test_run_meditation(self, client):
+        # Add some observations with entity_id for consolidation
+        for i in range(3):
+            client.add_atom(MemoryAtom(
+                content=f"obs {i}",
+                temporal=TemporalInterval(i, i + 1),
+                embodied_meta={"entity_id": "grpc_cup"},
+            ))
+
+        report = client.run_meditation(phases=["consolidate"])
+        assert report["success"] is True
+        assert report["consolidated_count"] >= 0
+        assert report["elapsed_sec"] >= 0
+
+    def test_run_meditation_all_phases(self, client):
+        report = client.run_meditation(phases=["consolidate", "crystallize", "extract"])
+        assert report["success"] is True
+        assert "errors" in report

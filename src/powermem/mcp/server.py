@@ -368,4 +368,119 @@ def create_mcp_server(db_path: str):
             ensure_ascii=False,
         )
 
+    @mcp.tool()
+    def cognitive_search(
+        query: str,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        center_z: float = 0.0,
+        radius: float = 0.0,
+        start_sec: float = 0.0,
+        end_sec: float = 0.0,
+        limit: int = 30,
+    ) -> str:
+        """Tri-Route 认知检索 — 融合语义相似度 + 全局模式 + 时空约束
+
+        根据查询内容自动选择路由：
+        - 普通查询走 System-1（语义相似度）
+        - 含抽象关键词（如"为什么/规律/模式"）自动激活 System-2（全局模式遍历）
+        - 提供时空参数时激活 System-3（物理定位）
+
+        Args:
+            query: 查询文本
+            center_x/y/z: 空间中心（可选）
+            radius: 空间半径（米，大于0时启用空间过滤）
+            start_sec/end_sec: 时间区间（可选，end_sec > start_sec 时启用时间过滤）
+            limit: 最大返回数
+        """
+        em = _get_embodied_memory(db_path)
+        spatial = Vec3(center_x, center_y, center_z) if radius > 0 else None
+        temporal = TemporalInterval(start_sec, end_sec) if end_sec > start_sec else None
+        atoms = em.search(
+            query=query,
+            spatial_center=spatial,
+            spatial_radius=radius if radius > 0 else None,
+            temporal_interval=temporal,
+            limit=limit,
+        )
+        return json.dumps(
+            [_atom_to_dict(a) for a in atoms],
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    def index_concept(
+        memory_id: int,
+        dimension: str,
+        layer: int,
+        concept_id: str,
+        confidence: float = 1.0,
+    ) -> str:
+        """为指定记忆添加概念索引条目（支撑 System-2 Global Selection）
+
+        Args:
+            memory_id: 记忆 ID
+            dimension: 概念维度，如 "task" / "physics" / "spatial_region" / "social" / "entity"
+            layer: 层级深度（1=最具体，2=抽象概念）
+            concept_id: 概念标识符
+            confidence: 置信度（0.0-1.0，默认 1.0）
+        """
+        em = _get_embodied_memory(db_path)
+        em.index_concept(memory_id, dimension, layer, concept_id, confidence)
+        return json.dumps(
+            {"success": True, "memory_id": memory_id, "concept_id": concept_id},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    def add_experience_edge(
+        source_memory_id: int,
+        target_memory_id: int,
+        edge_type: str,
+        strength: float = 1.0,
+    ) -> str:
+        """在物理经验图中添加一条关系边
+
+        Args:
+            source_memory_id: 源记忆 ID
+            target_memory_id: 目标记忆 ID
+            edge_type: 关系类型，可选：causes, precedes, supports, contains,
+                       instantiates, part_of, adjacent_to, overlaps_temporally
+            strength: 边强度（0.0-1.0，默认 1.0）
+        """
+        em = _get_embodied_memory(db_path)
+        em.add_experience_edge(
+            source_memory_id, target_memory_id, edge_type, strength
+        )
+        return json.dumps(
+            {
+                "success": True,
+                "source": source_memory_id,
+                "target": target_memory_id,
+                "edge_type": edge_type,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    def run_meditation(
+        phases: str = "consolidate,crystallize,extract",
+    ) -> str:
+        """触发离线冥想管道，自动抽象历史记忆
+
+        三阶段熵减：
+        1. consolidate — 同一实体短时观测聚合为事件
+        2. crystallize — 增量式空间关系固化
+        3. extract — 高频动作-结果模式提取为抽象概念
+
+        Args:
+            phases: 逗号分隔的阶段列表，默认全部三阶段
+        """
+        em = _get_embodied_memory(db_path)
+        report = em.run_meditation(phases=phases.split(","))
+        return json.dumps(report.to_dict(), indent=2, ensure_ascii=False)
+
     return mcp

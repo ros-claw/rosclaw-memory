@@ -1137,6 +1137,27 @@ class EmbodiedMemory:
         )
 
     # ========================================================================
+    # 冥想管道（离线抽象）
+    # ========================================================================
+
+    def run_meditation(
+        self,
+        phases: Optional[List[str]] = None,
+    ) -> "MeditationReport":
+        """触发离线冥想管道，自动抽象历史记忆
+
+        Args:
+            phases: 要执行的阶段列表，默认 ["consolidate", "crystallize", "extract"]
+
+        Returns:
+            MeditationReport
+        """
+        from .meditation_pipeline import MeditationPipeline
+
+        pipe = MeditationPipeline(self)
+        return pipe.run(phases=phases)
+
+    # ========================================================================
     # 生命周期
     # ========================================================================
 

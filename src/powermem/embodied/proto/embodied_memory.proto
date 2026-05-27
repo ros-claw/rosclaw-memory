@@ -321,6 +321,72 @@ message ComputeRelationsResponse {
 }
 
 // ============================================================================
+// Tri-Route Cognitive Search
+// ============================================================================
+
+message CognitiveSearchRequest {
+  string query = 1;
+  optional Vec3 spatial_center = 2;
+  optional double spatial_radius = 3;
+  optional TemporalInterval temporal_interval = 4;
+  int32 limit = 5;
+}
+
+message CognitiveSearchResponse {
+  repeated MemoryAtomPayload atoms = 1;
+}
+
+// ============================================================================
+// Concept Indexing
+// ============================================================================
+
+message IndexConceptRequest {
+  int64 memory_id = 1;
+  string dimension = 2;
+  int32 layer = 3;
+  string concept_id = 4;
+  double confidence = 5;
+}
+
+message IndexConceptResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Experience Edge
+// ============================================================================
+
+message AddExperienceEdgeRequest {
+  int64 source_memory_id = 1;
+  int64 target_memory_id = 2;
+  string edge_type = 3;
+  double strength = 4;
+  optional string spatial_context_json = 5;
+  optional string temporal_context_json = 6;
+}
+
+message AddExperienceEdgeResponse {
+  bool success = 1;
+}
+
+// ============================================================================
+// Meditation
+// ============================================================================
+
+message RunMeditationRequest {
+  repeated string phases = 1;
+}
+
+message RunMeditationResponse {
+  bool success = 1;
+  int32 consolidated_count = 2;
+  int32 crystallized_count = 3;
+  int32 extracted_patterns = 4;
+  double elapsed_sec = 5;
+  repeated string errors = 6;
+}
+
+// ============================================================================
 // Stats
 // ============================================================================
 
@@ -360,6 +426,11 @@ service EmbodiedMemoryService {
   rpc SearchWorldObjects(SearchWorldObjectsRequest) returns (SearchWorldObjectsResponse);
   rpc GetSceneGraph(GetSceneGraphRequest) returns (GetSceneGraphResponse);
   rpc ComputeRelations(ComputeRelationsRequest) returns (ComputeRelationsResponse);
+
+  rpc CognitiveSearch(CognitiveSearchRequest) returns (CognitiveSearchResponse);
+  rpc IndexConcept(IndexConceptRequest) returns (IndexConceptResponse);
+  rpc AddExperienceEdge(AddExperienceEdgeRequest) returns (AddExperienceEdgeResponse);
+  rpc RunMeditation(RunMeditationRequest) returns (RunMeditationResponse);
 
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
 }

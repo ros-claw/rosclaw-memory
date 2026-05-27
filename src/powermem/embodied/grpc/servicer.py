@@ -543,6 +543,90 @@ class EmbodiedMemoryServicer(embodied_memory_pb2_grpc.EmbodiedMemoryServiceServi
         return self._handle(context, _do)
 
     # -----------------------------------------------------------------------
+    # Tri-Route Cognitive Search
+    # -----------------------------------------------------------------------
+
+    def CognitiveSearch(self, request, context):
+        def _do():
+            spatial_center = (
+                _pb_vec3_to_py(request.spatial_center)
+                if request.HasField("spatial_center")
+                else None
+            )
+            spatial_radius = (
+                request.spatial_radius if request.HasField("spatial_radius") else None
+            )
+            temporal_interval = (
+                _pb_temporal_to_py(request.temporal_interval)
+                if request.HasField("temporal_interval")
+                else None
+            )
+            atoms = self.em.search(
+                query=request.query,
+                spatial_center=spatial_center,
+                spatial_radius=spatial_radius,
+                temporal_interval=temporal_interval,
+                limit=request.limit or 30,
+            )
+            return embodied_memory_pb2.CognitiveSearchResponse(
+                atoms=[_py_atom_to_pb(a) for a in atoms]
+            )
+        return self._handle(context, _do)
+
+    # -----------------------------------------------------------------------
+    # Concept & Experience Graph
+    # -----------------------------------------------------------------------
+
+    def IndexConcept(self, request, context):
+        def _do():
+            self.em.index_concept(
+                memory_id=request.memory_id,
+                dimension=request.dimension,
+                layer=request.layer,
+                concept_id=request.concept_id,
+                confidence=request.confidence,
+            )
+            return embodied_memory_pb2.IndexConceptResponse(success=True)
+        return self._handle(context, _do)
+
+    def AddExperienceEdge(self, request, context):
+        def _do():
+            spatial_context = None
+            temporal_context = None
+            if request.HasField("spatial_context_json"):
+                spatial_context = json.loads(request.spatial_context_json)
+            if request.HasField("temporal_context_json"):
+                temporal_context = json.loads(request.temporal_context_json)
+            self.em.add_experience_edge(
+                source_memory_id=request.source_memory_id,
+                target_memory_id=request.target_memory_id,
+                edge_type=request.edge_type,
+                strength=request.strength,
+                spatial_context=spatial_context,
+                temporal_context=temporal_context,
+            )
+            return embodied_memory_pb2.AddExperienceEdgeResponse(success=True)
+        return self._handle(context, _do)
+
+    # -----------------------------------------------------------------------
+    # Meditation
+    # -----------------------------------------------------------------------
+
+    def RunMeditation(self, request, context):
+        def _do():
+            phases = list(request.phases) if request.phases else None
+            report = self.em.run_meditation(phases=phases)
+            return embodied_memory_pb2.RunMeditationResponse(
+                success=report.success,
+                consolidated_count=report.consolidated_count,
+                crystallized_count=report.crystallized_count,
+                extracted_patterns=report.extracted_patterns,
+                elapsed_sec=report.elapsed_sec,
+                errors=report.errors,
+            )
+        return self._handle(context, _do)
+
+    # -----------------------------------------------------------------------
     # Stats
     # -----------------------------------------------------------------------
 

@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from powermem.embodied.proto import embodied_memory_pb2 as embodied__memory__pb2
+from . import embodied_memory_pb2 as embodied__memory__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -133,6 +133,26 @@ class EmbodiedMemoryServiceStub(object):
                 request_serializer=embodied__memory__pb2.ComputeRelationsRequest.SerializeToString,
                 response_deserializer=embodied__memory__pb2.ComputeRelationsResponse.FromString,
                 _registered_method=True)
+        self.CognitiveSearch = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/CognitiveSearch',
+                request_serializer=embodied__memory__pb2.CognitiveSearchRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.CognitiveSearchResponse.FromString,
+                _registered_method=True)
+        self.IndexConcept = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/IndexConcept',
+                request_serializer=embodied__memory__pb2.IndexConceptRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.IndexConceptResponse.FromString,
+                _registered_method=True)
+        self.AddExperienceEdge = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/AddExperienceEdge',
+                request_serializer=embodied__memory__pb2.AddExperienceEdgeRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.AddExperienceEdgeResponse.FromString,
+                _registered_method=True)
+        self.RunMeditation = channel.unary_unary(
+                '/powermem.embodied.EmbodiedMemoryService/RunMeditation',
+                request_serializer=embodied__memory__pb2.RunMeditationRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.RunMeditationResponse.FromString,
+                _registered_method=True)
         self.GetStats = channel.unary_unary(
                 '/powermem.embodied.EmbodiedMemoryService/GetStats',
                 request_serializer=embodied__memory__pb2.GetStatsRequest.SerializeToString,
@@ -261,6 +281,30 @@ class EmbodiedMemoryServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CognitiveSearch(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def IndexConcept(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddExperienceEdge(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RunMeditation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetStats(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -364,6 +408,26 @@ def add_EmbodiedMemoryServiceServicer_to_server(servicer, server):
                     servicer.ComputeRelations,
                     request_deserializer=embodied__memory__pb2.ComputeRelationsRequest.FromString,
                     response_serializer=embodied__memory__pb2.ComputeRelationsResponse.SerializeToString,
+            ),
+            'CognitiveSearch': grpc.unary_unary_rpc_method_handler(
+                    servicer.CognitiveSearch,
+                    request_deserializer=embodied__memory__pb2.CognitiveSearchRequest.FromString,
+                    response_serializer=embodied__memory__pb2.CognitiveSearchResponse.SerializeToString,
+            ),
+            'IndexConcept': grpc.unary_unary_rpc_method_handler(
+                    servicer.IndexConcept,
+                    request_deserializer=embodied__memory__pb2.IndexConceptRequest.FromString,
+                    response_serializer=embodied__memory__pb2.IndexConceptResponse.SerializeToString,
+            ),
+            'AddExperienceEdge': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddExperienceEdge,
+                    request_deserializer=embodied__memory__pb2.AddExperienceEdgeRequest.FromString,
+                    response_serializer=embodied__memory__pb2.AddExperienceEdgeResponse.SerializeToString,
+            ),
+            'RunMeditation': grpc.unary_unary_rpc_method_handler(
+                    servicer.RunMeditation,
+                    request_deserializer=embodied__memory__pb2.RunMeditationRequest.FromString,
+                    response_serializer=embodied__memory__pb2.RunMeditationResponse.SerializeToString,
             ),
             'GetStats': grpc.unary_unary_rpc_method_handler(
                     servicer.GetStats,
@@ -888,6 +952,114 @@ class EmbodiedMemoryService(object):
             '/powermem.embodied.EmbodiedMemoryService/ComputeRelations',
             embodied__memory__pb2.ComputeRelationsRequest.SerializeToString,
             embodied__memory__pb2.ComputeRelationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CognitiveSearch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/CognitiveSearch',
+            embodied__memory__pb2.CognitiveSearchRequest.SerializeToString,
+            embodied__memory__pb2.CognitiveSearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def IndexConcept(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/IndexConcept',
+            embodied__memory__pb2.IndexConceptRequest.SerializeToString,
+            embodied__memory__pb2.IndexConceptResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddExperienceEdge(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/AddExperienceEdge',
+            embodied__memory__pb2.AddExperienceEdgeRequest.SerializeToString,
+            embodied__memory__pb2.AddExperienceEdgeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RunMeditation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/RunMeditation',
+            embodied__memory__pb2.RunMeditationRequest.SerializeToString,
+            embodied__memory__pb2.RunMeditationResponse.FromString,
             options,
             channel_credentials,
             insecure,

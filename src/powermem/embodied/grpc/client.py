@@ -235,6 +235,80 @@ class EmbodiedMemoryClient:
         return [_pb_spatial_relation_to_py(r) for r in resp.relations]
 
     # -----------------------------------------------------------------------
+    # Tri-Route Cognitive Search
+    # -----------------------------------------------------------------------
+
+    def cognitive_search(
+        self,
+        query: str,
+        spatial_center: Optional[Vec3] = None,
+        spatial_radius: Optional[float] = None,
+        temporal_interval: Optional[TemporalInterval] = None,
+        limit: int = 30,
+    ) -> List[MemoryAtom]:
+        from .servicer import _py_temporal_to_pb, _py_vec3_to_pb, _pb_atom_to_py
+
+        req = embodied_memory_pb2.CognitiveSearchRequest(query=query, limit=limit)
+        if spatial_center is not None:
+            req.spatial_center.CopyFrom(_py_vec3_to_pb(spatial_center))
+            req.spatial_radius = spatial_radius or 1.0
+        if temporal_interval is not None:
+            req.temporal_interval.CopyFrom(_py_temporal_to_pb(temporal_interval))
+        resp = self.stub.CognitiveSearch(req)
+        return [_pb_atom_to_py(a) for a in resp.atoms]
+
+    def index_concept(
+        self,
+        memory_id: int,
+        dimension: str,
+        layer: int,
+        concept_id: str,
+        confidence: float = 1.0,
+    ) -> bool:
+        req = embodied_memory_pb2.IndexConceptRequest(
+            memory_id=memory_id,
+            dimension=dimension,
+            layer=layer,
+            concept_id=concept_id,
+            confidence=confidence,
+        )
+        resp = self.stub.IndexConcept(req)
+        return resp.success
+
+    def add_experience_edge(
+        self,
+        source_memory_id: int,
+        target_memory_id: int,
+        edge_type: str,
+        strength: float = 1.0,
+    ) -> bool:
+        req = embodied_memory_pb2.AddExperienceEdgeRequest(
+            source_memory_id=source_memory_id,
+            target_memory_id=target_memory_id,
+            edge_type=edge_type,
+            strength=strength,
+        )
+        resp = self.stub.AddExperienceEdge(req)
+        return resp.success
+
+    def run_meditation(
+        self,
+        phases: Optional[List[str]] = None,
+    ) -> dict:
+        req = embodied_memory_pb2.RunMeditationRequest(
+            phases=phases or ["consolidate", "crystallize", "extract"]
+        )
+        resp = self.stub.RunMeditation(req)
+        return {
+            "success": resp.success,
+            "consolidated_count": resp.consolidated_count,
+            "crystallized_count": resp.crystallized_count,
+            "extracted_patterns": resp.extracted_patterns,
+            "elapsed_sec": resp.elapsed_sec,
+            "errors": list(resp.errors),
+        }
+
+    # -----------------------------------------------------------------------
     # Stats
     # -----------------------------------------------------------------------
 
