@@ -50,6 +50,9 @@ class ObjectPermanenceTracker:
 
     将当前帧的感知检测结果与持久化世界对象同步，
     自动管理遮挡状态转移和置信度衰减。
+
+    运动预测：维护每个对象的速度历史（滑动窗口），
+    在遮挡期间使用线性外推预测位置，辅助重检测匹配。
     """
 
     def __init__(
@@ -57,16 +60,27 @@ class ObjectPermanenceTracker:
         world_object_store: Any,
         decay_rate: float = 0.05,
         missing_threshold: float = 0.2,
+        velocity_window: int = 5,
+        enable_prediction: bool = True,
     ):
         """
         Args:
             world_object_store: WorldObjectStore 实例
             decay_rate: 每秒置信度衰减率（默认 5%/秒）
             missing_threshold: 置信度低于此值时标记为 missing
+            velocity_window: 速度滑动窗口大小
+            enable_prediction: 是否启用遮挡期间运动预测
         """
         self.store = world_object_store
         self.decay_rate = decay_rate
         self.missing_threshold = missing_threshold
+        self.velocity_window = velocity_window
+        self.enable_prediction = enable_prediction
+
+        # 运动状态：obj_id -> {velocity: Vec3, history: List[Vec3], last_update_sec: float}
+        self._motion_state: Dict[str, Dict[str, Any]] = {}
+        # 预测位置：obj_id -> Vec3（仅遮挡期间有效）
+        self._predicted_positions: Dict[str, Vec3] = {}
 
     def sync_detections(
         self,
@@ -158,7 +172,7 @@ class ObjectPermanenceTracker:
                 report.added.append(new_obj.obj_id)
                 matched_detection_indices.add(i)
 
-        # Step 4: 已有但未被匹配的对象 → 衰减 confidence
+        # Step 4: 已有但未被匹配的对象 → 衰减 confidence，更新预测位置
         for obj_id, obj in existing_by_id.items():
             if obj_id in matched_existing_ids:
                 continue
@@ -171,15 +185,23 @@ class ObjectPermanenceTracker:
                 report.transitions.append(
                     f"{obj_id}: {obj.occlusion_status} ({new_confidence:.2f}) -> missing"
                 )
+                # 清除运动状态
+                self._motion_state.pop(obj_id, None)
+                self._predicted_positions.pop(obj_id, None)
             elif new_status == "visible":
                 new_status = "occluded"
                 report.occluded.append(obj_id)
                 report.transitions.append(
                     f"{obj_id}: visible -> occluded ({new_confidence:.2f})"
                 )
+                # 初始化遮挡期间的预测
+                if self.enable_prediction:
+                    self._predict_position(obj_id, timestamp_sec)
             else:
-                # 保持 occluded 状态，但 confidence 继续衰减
+                # 保持 occluded 状态，confidence 继续衰减，更新预测位置
                 report.occluded.append(obj_id)
+                if self.enable_prediction:
+                    self._predict_position(obj_id, timestamp_sec)
 
             self.store.update_occlusion(
                 obj_id,
@@ -204,7 +226,12 @@ class ObjectPermanenceTracker:
         detection: WorldObject,
         timestamp_sec: float,
     ) -> None:
-        """确认对象可见，更新位姿和遮挡状态"""
+        """确认对象可见，更新位姿、遮挡状态和速度历史"""
+        if self.enable_prediction:
+            self._update_velocity(existing, detection, timestamp_sec)
+            # 清除预测位置（对象已重新可见）
+            self._predicted_positions.pop(existing.obj_id, None)
+
         self.store.update_pose(
             existing.obj_id,
             detection.pose,
@@ -219,6 +246,76 @@ class ObjectPermanenceTracker:
             last_seen_sec=timestamp_sec,
         )
 
+    def _update_velocity(
+        self,
+        existing: WorldObject,
+        detection: WorldObject,
+        timestamp_sec: float,
+    ) -> None:
+        """更新对象速度历史（滑动窗口平均）"""
+        obj_id = existing.obj_id
+        old_state = self._motion_state.get(obj_id)
+        if old_state is None:
+            self._motion_state[obj_id] = {
+                "velocity": Vec3(0, 0, 0),
+                "history": [],
+                "last_update_sec": timestamp_sec,
+            }
+            return
+
+        dt = timestamp_sec - old_state["last_update_sec"]
+        if dt <= 0:
+            return
+
+        old_pos = existing.pose.position
+        new_pos = detection.pose.position
+        vx = (new_pos.x - old_pos.x) / dt
+        vy = (new_pos.y - old_pos.y) / dt
+        vz = (new_pos.z - old_pos.z) / dt
+        instant_vel = Vec3(vx, vy, vz)
+
+        history: List[Vec3] = old_state["history"]
+        history.append(instant_vel)
+        if len(history) > self.velocity_window:
+            history.pop(0)
+
+        # 滑动窗口平均速度
+        avg_vel = Vec3(
+            sum(v.x for v in history) / len(history),
+            sum(v.y for v in history) / len(history),
+            sum(v.z for v in history) / len(history),
+        )
+        old_state["velocity"] = avg_vel
+        old_state["last_update_sec"] = timestamp_sec
+
+    def _predict_position(self, obj_id: str, timestamp_sec: float) -> Optional[Vec3]:
+        """基于速度历史预测对象当前位置（遮挡期间）"""
+        if not self.enable_prediction:
+            return None
+        state = self._motion_state.get(obj_id)
+        if state is None:
+            return None
+        vel = state["velocity"]
+        if vel.x == 0 and vel.y == 0 and vel.z == 0:
+            return None
+        last_update = state["last_update_sec"]
+        dt = timestamp_sec - last_update
+        if dt <= 0:
+            return None
+        # 获取当前存储的位置（可能是上一次预测后的位置或最后确认位置）
+        obj = self.store.load(obj_id)
+        if obj is None:
+            return None
+        base_pos = self._predicted_positions.get(obj_id, obj.pose.position)
+        pred = Vec3(
+            base_pos.x + vel.x * dt,
+            base_pos.y + vel.y * dt,
+            base_pos.z + vel.z * dt,
+        )
+        self._predicted_positions[obj_id] = pred
+        state["last_update_sec"] = timestamp_sec
+        return pred
+
     def _find_spatial_match(
         self,
         detection: WorldObject,
@@ -226,7 +323,11 @@ class ObjectPermanenceTracker:
         exclude_ids: set,
         radius: float,
     ) -> Optional[str]:
-        """在半径内按类型匹配最近的对象"""
+        """在半径内按类型匹配最近的对象
+
+        对遮挡对象使用预测位置而非最后确认位置，
+        提高运动对象在重检测时的匹配成功率。
+        """
         best_match: Optional[str] = None
         best_dist = float("inf")
 
@@ -239,7 +340,12 @@ class ObjectPermanenceTracker:
             # 忽略 missing 状态的对象（已经认为消失了）
             if obj.occlusion_status == "missing":
                 continue
-            dist = det_pos.distance_to(obj.pose.position)
+            # 对遮挡对象优先使用预测位置
+            if obj.occlusion_status == "occluded" and obj.obj_id in self._predicted_positions:
+                obj_pos = self._predicted_positions[obj.obj_id]
+            else:
+                obj_pos = obj.pose.position
+            dist = det_pos.distance_to(obj_pos)
             if dist <= radius and dist < best_dist:
                 best_dist = dist
                 best_match = obj.obj_id

@@ -210,6 +210,121 @@ class TestObjectPermanenceNewObjects:
         assert obj.confidence == pytest.approx(1.0)
 
 
+class TestObjectPermanenceMotionPrediction:
+    def test_velocity_estimated_from_movement(self, tracker, embodied_memory):
+        # Object starts at (0,0,0); need TWO visible observations to establish velocity
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="moving_cup", obj_type="cylinder", scene_id="kitchen",
+            pose=Pose(position=Vec3(0, 0, 0)),
+        ))
+
+        # t=1: first observation at (1,0,0) — initializes motion state
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="moving_cup", obj_type="cylinder",
+                       pose=Pose(position=Vec3(1, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=1.0)
+
+        # t=2: second observation at (2,0,0) — velocity = (2-1)/1 = 1.0
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="moving_cup", obj_type="cylinder",
+                       pose=Pose(position=Vec3(2, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=2.0)
+
+        state = tracker._motion_state.get("moving_cup")
+        assert state is not None
+        assert state["velocity"].x == pytest.approx(1.0)
+        assert state["velocity"].y == pytest.approx(0.0)
+
+    def test_predicted_position_during_occlusion(self, tracker, embodied_memory):
+        # Object moving at 0.5 m/s in x
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="proj_ball", obj_type="sphere", scene_id="kitchen",
+            pose=Pose(position=Vec3(0, 0, 0)),
+            last_seen_sec=0.0, confidence=1.0,
+        ))
+
+        # t=1: at (0.5, 0, 0) — initializes
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="proj_ball", obj_type="sphere",
+                       pose=Pose(position=Vec3(0.5, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=1.0)
+
+        # t=2: at (1.0, 0, 0) — velocity = 0.5
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="proj_ball", obj_type="sphere",
+                       pose=Pose(position=Vec3(1.0, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=2.0)
+
+        # Now occluded at t=4 (2 seconds later)
+        tracker.sync_detections("kitchen", [], timestamp_sec=4.0)
+
+        # Predicted position = 1.0 + 0.5*2 = 2.0
+        pred = tracker._predicted_positions.get("proj_ball")
+        assert pred is not None
+        assert pred.x == pytest.approx(2.0, abs=0.01)
+
+    def test_redetect_using_predicted_position(self, tracker, embodied_memory):
+        # Object moving at 1.0 m/s in x, becomes occluded
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="fast_mug", obj_type="cylinder", scene_id="kitchen",
+            pose=Pose(position=Vec3(0, 0, 0)),
+            last_seen_sec=0.0, confidence=1.0,
+        ))
+
+        # t=1: at (1, 0, 0) — initializes
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="fast_mug", obj_type="cylinder",
+                       pose=Pose(position=Vec3(1, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=1.0)
+
+        # t=2: at (2, 0, 0) — velocity = 1.0
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="fast_mug", obj_type="cylinder",
+                       pose=Pose(position=Vec3(2, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=2.0)
+
+        # t=3: occluded
+        tracker.sync_detections("kitchen", [], timestamp_sec=3.0)
+
+        # t=4: re-detected at (4, 0, 0)
+        # Without prediction, search center would be (2,0,0) with radius=2.0
+        # With prediction, search center would be (3,0,0) — closer match
+        report = tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="fast_mug", obj_type="cylinder",
+                       pose=Pose(position=Vec3(4, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=4.0, occlusion_radius=2.0)
+
+        assert "fast_mug" in report.visible
+        assert "occluded -> visible" in report.transitions[0]
+
+    def test_motion_state_cleared_on_missing(self, tracker, embodied_memory):
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="temp_fork", obj_type="mesh", scene_id="kitchen",
+            pose=Pose(position=Vec3(0, 0, 0)),
+            last_seen_sec=0.0, confidence=1.0,
+        ))
+
+        # Establish velocity (need two observations)
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="temp_fork", obj_type="mesh",
+                       pose=Pose(position=Vec3(1, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=1.0)
+        tracker.sync_detections("kitchen", [
+            WorldObject(obj_id="temp_fork", obj_type="mesh",
+                       pose=Pose(position=Vec3(2, 0, 0)), scene_id="kitchen"),
+        ], timestamp_sec=2.0)
+
+        assert "temp_fork" in tracker._motion_state
+
+        # Long occlusion -> missing
+        tracker.sync_detections("kitchen", [], timestamp_sec=100.0)
+
+        obj = embodied_memory.get_world_object("temp_fork")
+        assert obj.occlusion_status == "missing"
+        assert "temp_fork" not in tracker._motion_state
+        assert "temp_fork" not in tracker._predicted_positions
+
+
 class TestObjectPermanenceEmbodiedMemoryIntegration:
     def test_sync_scene_objects_through_embodied_memory(self, embodied_memory):
         # Pre-existing

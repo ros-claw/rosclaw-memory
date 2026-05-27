@@ -285,9 +285,39 @@ _PHYSICAL_MODEL_INDEXES: List[str] = [
     "CREATE INDEX IF NOT EXISTS idx_phys_model_type ON embodied_physical_models(model_type)",
 ]
 
+# --- Schema 版本与迁移 ---
+
+CURRENT_SCHEMA_VERSION = 2
+
+_SCHEMA_VERSION_DDL = """
+CREATE TABLE IF NOT EXISTS embodied_schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    description TEXT
+)
+"""
+
+# 迁移脚本：{target_version: [(description, [sql, ...])]}
+# None 表示此迁移仅作版本标记（base schema 由 ALL_DDL 创建）
+MIGRATIONS = {
+    1: [("Initial embodied schema", None)],
+    2: [(
+        "Add Object Permanence fields to embodied_world_objects",
+        [
+            "ALTER TABLE embodied_world_objects ADD COLUMN occlusion_status VARCHAR(16) DEFAULT 'visible'",
+            "ALTER TABLE embodied_world_objects ADD COLUMN last_confirmed_pos_x DOUBLE",
+            "ALTER TABLE embodied_world_objects ADD COLUMN last_confirmed_pos_y DOUBLE",
+            "ALTER TABLE embodied_world_objects ADD COLUMN last_confirmed_pos_z DOUBLE",
+            "ALTER TABLE embodied_world_objects ADD COLUMN confidence DOUBLE DEFAULT 1.0",
+            "ALTER TABLE embodied_world_objects ADD COLUMN last_seen_sec DOUBLE DEFAULT 0.0",
+        ],
+    )],
+}
+
 # --- 聚合 ---
 
 ALL_DDL = [
+    _SCHEMA_VERSION_DDL,
     _EMBODIED_MEMORIES_DDL,
     _CAUSAL_EDGES_DDL,
     _PREDICTIVE_STATE_DDL,
@@ -311,26 +341,34 @@ ALL_INDEXES = (
 )
 
 
-def initialize_embodied_schema(conn) -> None:
-    """初始化具身扩展 Schema
+def initialize_embodied_schema(conn, target_version: int = CURRENT_SCHEMA_VERSION) -> None:
+    """初始化具身扩展 Schema（含自动迁移）
 
     Args:
         conn: 数据库连接对象（pyseekdb Connection 或兼容 DB-API 的连接）
+        target_version: 目标 schema 版本（默认最新）
 
-    幂等操作 — 重复调用安全。
+    幂等操作 — 重复调用安全。会自动检测旧 schema 并应用迁移。
     """
     # 自动检测方言
-    dialect = "seekdb"
-    conn_module = getattr(getattr(conn, "__class__", None), "__module__", "").lower()
-    if "sqlite" in conn_module:
-        dialect = "sqlite"
-    elif "mysql" in conn_module or "pymysql" in conn_module:
-        dialect = "mysql"
-    elif "postgres" in conn_module or "psycopg" in conn_module:
-        dialect = "postgres"
+    dialect = _detect_dialect(conn)
 
     ddl_list, idx_list = get_dialect_ddl(dialect)
     cursor = conn.cursor()
+
+    # Step 1: 创建 schema_version 表（最先创建，用于版本追踪）
+    schema_version_ddl = _SCHEMA_VERSION_DDL
+    if dialect == "sqlite":
+        schema_version_ddl = schema_version_ddl.replace(
+            "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now'))",
+        )
+    try:
+        cursor.execute(schema_version_ddl)
+    except Exception as e:
+        logger.warning("Schema version table creation skipped: %s", e)
+
+    # Step 2: 创建所有表（IF NOT EXISTS，幂等）
     for ddl in ddl_list:
         try:
             cursor.execute(ddl)
@@ -338,6 +376,48 @@ def initialize_embodied_schema(conn) -> None:
         except Exception as e:
             logger.warning("DDL execution skipped: %s | error: %s", ddl[:60], e)
 
+    # Step 3: 确定当前 schema 版本
+    current_version = _get_current_schema_version(cursor, dialect)
+
+    # 如果通过表结构推断出版本但 schema_version 表为空，补录历史版本记录
+    if current_version > 0:
+        try:
+            cursor.execute("SELECT COUNT(*) FROM embodied_schema_version")
+            count = cursor.fetchone()[0]
+        except Exception:
+            count = 0
+        if count == 0:
+            for v in range(1, current_version + 1):
+                if v in MIGRATIONS:
+                    for desc, _ in MIGRATIONS[v]:
+                        _record_schema_version(cursor, v, desc, dialect)
+
+    logger.info("Current schema version: %d, target: %d", current_version, target_version)
+
+    # Step 4: 应用迁移
+    if current_version < target_version:
+        for version in range(current_version + 1, target_version + 1):
+            if version not in MIGRATIONS:
+                logger.warning("No migration defined for version %d", version)
+                continue
+            for desc, sql_list in MIGRATIONS[version]:
+                logger.info("Applying migration v%d: %s", version, desc)
+                if sql_list:
+                    for sql in sql_list:
+                        adapted = _adapt_migration_sql(sql, dialect)
+                        try:
+                            cursor.execute(adapted)
+                            logger.debug("Executed migration SQL: %s", adapted[:80])
+                        except Exception as e:
+                            # 列已存在等常见错误可忽略
+                            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                                logger.debug("Migration SQL skipped (already applied): %s", adapted[:80])
+                            else:
+                                logger.warning("Migration SQL failed: %s | error: %s", adapted[:80], e)
+                # 记录版本
+                _record_schema_version(cursor, version, desc, dialect)
+
+    # Step 5: 创建索引
     for idx_ddl in idx_list:
         try:
             cursor.execute(idx_ddl)
@@ -346,7 +426,105 @@ def initialize_embodied_schema(conn) -> None:
             logger.warning("INDEX execution skipped: %s | error: %s", idx_ddl[:60], e)
 
     conn.commit()
-    logger.info("ROSClaw-Memory embodied schema initialized (%s)", dialect)
+    logger.info("ROSClaw-Memory embodied schema initialized (%s) at v%d", dialect, target_version)
+
+
+def _detect_dialect(conn) -> str:
+    """自动检测数据库方言"""
+    conn_module = getattr(getattr(conn, "__class__", None), "__module__", "").lower()
+    if "sqlite" in conn_module:
+        return "sqlite"
+    elif "mysql" in conn_module or "pymysql" in conn_module:
+        return "mysql"
+    elif "postgres" in conn_module or "psycopg" in conn_module:
+        return "postgres"
+    return "seekdb"
+
+
+def _get_current_schema_version(cursor, dialect: str) -> int:
+    """获取当前 schema 版本"""
+    # 先查 schema_version 表
+    try:
+        cursor.execute("SELECT MAX(version) FROM embodied_schema_version")
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+    except Exception:
+        pass
+
+    # 没有版本记录 — 通过表结构推断
+    if _table_exists(cursor, "embodied_world_objects", dialect):
+        # 检查是否有 occlusion_status 列
+        if _column_exists(cursor, "embodied_world_objects", "occlusion_status", dialect):
+            return 2
+        return 1
+
+    # 完全没有表 — 视为 v0，DDL 会创建完整新表
+    return 0
+
+
+def _table_exists(cursor, table_name: str, dialect: str) -> bool:
+    """检查表是否存在"""
+    try:
+        if dialect == "sqlite":
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,),
+            )
+        elif dialect in ("mysql", "seekdb"):
+            cursor.execute("SHOW TABLES LIKE %s", (table_name,))
+        else:  # postgres
+            cursor.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = %s",
+                (table_name,),
+            )
+        return cursor.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _column_exists(cursor, table_name: str, column_name: str, dialect: str) -> bool:
+    """检查列是否存在"""
+    try:
+        if dialect == "sqlite":
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = {row[1] for row in cursor.fetchall()}
+            return column_name in columns
+        elif dialect in ("mysql", "seekdb"):
+            cursor.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                (table_name, column_name),
+            )
+            return cursor.fetchone() is not None
+        else:  # postgres
+            cursor.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                (table_name, column_name),
+            )
+            return cursor.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _record_schema_version(cursor, version: int, description: str, dialect: str) -> None:
+    """记录已应用的 schema 版本"""
+    if dialect == "sqlite":
+        cursor.execute(
+            "INSERT OR REPLACE INTO embodied_schema_version (version, applied_at, description) VALUES (?, strftime('%Y-%m-%dT%H:%M:%f', 'now'), ?)",
+            (version, description),
+        )
+    else:
+        cursor.execute(
+            "REPLACE INTO embodied_schema_version (version, applied_at, description) VALUES (%s, NOW(), %s)",
+            (version, description),
+        )
+
+
+def _adapt_migration_sql(sql: str, dialect: str) -> str:
+    """根据方言适配迁移 SQL"""
+    if dialect == "sqlite":
+        return sql.replace("VARCHAR(16)", "TEXT").replace("DOUBLE", "REAL")
+    return sql
 
 
 def get_dialect_ddl(dialect: str = "seekdb") -> tuple[List[str], List[str]]:
