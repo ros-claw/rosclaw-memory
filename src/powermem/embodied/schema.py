@@ -167,6 +167,13 @@ CREATE TABLE IF NOT EXISTS embodied_world_objects (
     parent_obj_id       VARCHAR(128),
     state               VARCHAR(32) DEFAULT 'present',
     memory_id           BIGINT,
+    -- 对象恒存（遮挡感知）
+    occlusion_status    VARCHAR(16) DEFAULT 'visible',  -- visible | occluded | missing
+    last_confirmed_pos_x DOUBLE,
+    last_confirmed_pos_y DOUBLE,
+    last_confirmed_pos_z DOUBLE,
+    confidence          DOUBLE DEFAULT 1.0,              -- 存在置信度 [0, 1]
+    last_seen_sec       DOUBLE DEFAULT 0.0,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (memory_id) REFERENCES embodied_memories(memory_id) ON DELETE SET NULL
@@ -386,6 +393,7 @@ def get_dialect_ddl(dialect: str = "seekdb") -> tuple[List[str], List[str]]:
             .replace("VARCHAR(128)", "TEXT")
             .replace("VARCHAR(32)", "TEXT")
             .replace("VARCHAR(256)", "TEXT")
+            .replace("VARCHAR(16)", "TEXT")
             .replace("BIGINT", "INTEGER")
             .replace("DOUBLE", "REAL"),
             _SPATIAL_RELATIONS_DDL

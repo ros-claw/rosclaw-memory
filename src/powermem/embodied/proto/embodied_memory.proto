@@ -275,6 +275,11 @@ message WorldObjectPayload {
   string parent_obj_id = 11;
   string state = 12;
   int64 memory_id = 13;
+  // Object Permanence
+  string occlusion_status = 14;  // visible | occluded | missing
+  Vec3 last_confirmed_position = 15;
+  optional double confidence = 16;
+  optional double last_seen_sec = 17;
 }
 
 message SpatialRelationPayload {
@@ -318,6 +323,22 @@ message ComputeRelationsRequest {
 }
 message ComputeRelationsResponse {
   repeated SpatialRelationPayload relations = 1;
+}
+
+// ============================================================================
+// Object Permanence
+// ============================================================================
+
+message SyncSceneObjectsRequest {
+  string scene_id = 1;
+  repeated WorldObjectPayload detections = 2;
+  double timestamp_sec = 3;
+  double occlusion_radius = 4;
+}
+
+message SyncSceneObjectsResponse {
+  repeated WorldObjectPayload updated_objects = 1;
+  repeated string transitions = 2;
 }
 
 // ============================================================================
@@ -426,6 +447,7 @@ service EmbodiedMemoryService {
   rpc SearchWorldObjects(SearchWorldObjectsRequest) returns (SearchWorldObjectsResponse);
   rpc GetSceneGraph(GetSceneGraphRequest) returns (GetSceneGraphResponse);
   rpc ComputeRelations(ComputeRelationsRequest) returns (ComputeRelationsResponse);
+  rpc SyncSceneObjects(SyncSceneObjectsRequest) returns (SyncSceneObjectsResponse);
 
   rpc CognitiveSearch(CognitiveSearchRequest) returns (CognitiveSearchResponse);
   rpc IndexConcept(IndexConceptRequest) returns (IndexConceptResponse);

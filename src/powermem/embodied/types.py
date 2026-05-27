@@ -365,6 +365,11 @@ class WorldObject:
     parent_obj_id: Optional[str] = None            # scene graph parent
     state: str = "present"                          # present | moved | removed | occluded
     memory_id: Optional[int] = None                # link to embodied_memories
+    # 对象恒存（遮挡感知）
+    occlusion_status: str = "visible"               # visible | occluded | missing
+    last_confirmed_position: Optional[Vec3] = None  # 最后一次确认的位置
+    confidence: float = 1.0                         # 存在置信度 [0, 1]
+    last_seen_sec: float = 0.0                     # 最后一次检测到的时间戳
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -381,6 +386,10 @@ class WorldObject:
             "parent_obj_id": self.parent_obj_id,
             "state": self.state,
             "memory_id": self.memory_id,
+            "occlusion_status": self.occlusion_status,
+            "last_confirmed_position": self.last_confirmed_position.to_dict() if self.last_confirmed_position else None,
+            "confidence": self.confidence,
+            "last_seen_sec": self.last_seen_sec,
         }
 
     @classmethod
@@ -401,6 +410,10 @@ class WorldObject:
             parent_obj_id=d.get("parent_obj_id") if d.get("parent_obj_id") else None,
             state=str(d.get("state", "present")),
             memory_id=int(d["memory_id"]) if d.get("memory_id") is not None else None,
+            occlusion_status=str(d.get("occlusion_status", "visible")),
+            last_confirmed_position=Vec3.from_dict(d["last_confirmed_position"]) if d.get("last_confirmed_position") else None,
+            confidence=float(d.get("confidence", 1.0)),
+            last_seen_sec=float(d.get("last_seen_sec", 0.0)),
         )
 
 

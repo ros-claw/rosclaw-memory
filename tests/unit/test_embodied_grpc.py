@@ -395,6 +395,49 @@ class TestGrpcWorldObjects:
         assert on_rels[0].object_id == "table"
 
 
+class TestGrpcObjectPermanence:
+    def test_sync_scene_objects(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        # Add pre-existing object
+        client.add_world_object(WorldObject(
+            obj_id="grpc_mug", obj_type="cylinder", name="mug",
+            pose=Pose(position=Vec3(1, 0, 0)), scene_id="grpc_kitchen",
+        ))
+
+        # Sync with detection at new position
+        report = client.sync_scene_objects(
+            scene_id="grpc_kitchen",
+            detections=[WorldObject(
+                obj_id="grpc_mug", obj_type="cylinder", name="mug",
+                pose=Pose(position=Vec3(2, 0, 0)), scene_id="grpc_kitchen",
+            )],
+            timestamp_sec=5.0,
+        )
+        assert len(report["transitions"]) == 0  # still visible
+
+        obj = client.get_world_object("grpc_mug")
+        assert obj.pose.position == Vec3(2, 0, 0)
+        assert obj.occlusion_status == "visible"
+
+    def test_sync_scene_objects_occlusion(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        client.add_world_object(WorldObject(
+            obj_id="grpc_cup", obj_type="box", scene_id="grpc_kitchen",
+            pose=Pose(position=Vec3(0, 0, 0)),
+        ))
+
+        # Sync with empty detections → object becomes occluded
+        report = client.sync_scene_objects(
+            scene_id="grpc_kitchen",
+            detections=[],
+            timestamp_sec=10.0,
+        )
+        assert len(report["transitions"]) == 1
+        assert "visible -> occluded" in report["transitions"][0]
+
+
 class TestGrpcCognitiveSearch:
     def test_cognitive_search_basic(self, client):
         client.add_atom(MemoryAtom(content="test search", spatial=Vec3(1, 2, 3)))

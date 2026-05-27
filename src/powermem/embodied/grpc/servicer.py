@@ -160,6 +160,10 @@ def _pb_world_object_to_py(pb: embodied_memory_pb2.WorldObjectPayload) -> WorldO
         parent_obj_id=pb.parent_obj_id if pb.parent_obj_id else None,
         state=pb.state or "present",
         memory_id=pb.memory_id if pb.memory_id else None,
+        occlusion_status=pb.occlusion_status or "visible",
+        last_confirmed_position=_pb_vec3_to_py(pb.last_confirmed_position) if pb.HasField("last_confirmed_position") else None,
+        confidence=pb.confidence if pb.HasField("confidence") else 1.0,
+        last_seen_sec=pb.last_seen_sec if pb.HasField("last_seen_sec") else 0.0,
     )
 
 
@@ -187,6 +191,14 @@ def _py_world_object_to_pb(obj: WorldObject) -> embodied_memory_pb2.WorldObjectP
         pb.parent_obj_id = obj.parent_obj_id
     if obj.memory_id is not None:
         pb.memory_id = obj.memory_id
+    if obj.occlusion_status:
+        pb.occlusion_status = obj.occlusion_status
+    if obj.last_confirmed_position is not None:
+        pb.last_confirmed_position.CopyFrom(_py_vec3_to_pb(obj.last_confirmed_position))
+    if obj.confidence != 1.0:
+        pb.confidence = obj.confidence
+    if obj.last_seen_sec != 0.0:
+        pb.last_seen_sec = obj.last_seen_sec
     return pb
 
 
@@ -539,6 +551,32 @@ class EmbodiedMemoryServicer(embodied_memory_pb2_grpc.EmbodiedMemoryServiceServi
             )
             return embodied_memory_pb2.ComputeRelationsResponse(
                 relations=[_py_spatial_relation_to_pb(r) for r in relations]
+            )
+        return self._handle(context, _do)
+
+    # -----------------------------------------------------------------------
+    # Object Permanence
+    # -----------------------------------------------------------------------
+
+    def SyncSceneObjects(self, request, context):
+        def _do():
+            detections = [_pb_world_object_to_py(d) for d in request.detections]
+            report = self.em.sync_scene_objects(
+                scene_id=request.scene_id,
+                detections=detections,
+                timestamp_sec=request.timestamp_sec,
+                occlusion_radius=request.occlusion_radius or 0.5,
+            )
+            # 返回更新后的所有对象
+            updated = self.em.search_world_objects(
+                center=Vec3(0, 0, 0),
+                radius=1e6,
+                scene_id=request.scene_id,
+                limit=1000,
+            )
+            return embodied_memory_pb2.SyncSceneObjectsResponse(
+                updated_objects=[_py_world_object_to_pb(o) for o in updated],
+                transitions=report.transitions,
             )
         return self._handle(context, _do)
 

@@ -234,6 +234,28 @@ class EmbodiedMemoryClient:
         resp = self.stub.ComputeRelations(req)
         return [_pb_spatial_relation_to_py(r) for r in resp.relations]
 
+    def sync_scene_objects(
+        self,
+        scene_id: str,
+        detections: List[WorldObject],
+        timestamp_sec: float,
+        occlusion_radius: float = 0.5,
+    ) -> Dict[str, Any]:
+        from .servicer import _py_world_object_to_pb
+
+        pb_detections = [_py_world_object_to_pb(d) for d in detections]
+        req = embodied_memory_pb2.SyncSceneObjectsRequest(
+            scene_id=scene_id,
+            detections=pb_detections,
+            timestamp_sec=timestamp_sec,
+            occlusion_radius=occlusion_radius,
+        )
+        resp = self.stub.SyncSceneObjects(req)
+        return {
+            "updated_objects": [d.to_dict() for d in detections],  # simplified
+            "transitions": list(resp.transitions),
+        }
+
     # -----------------------------------------------------------------------
     # Tri-Route Cognitive Search
     # -----------------------------------------------------------------------

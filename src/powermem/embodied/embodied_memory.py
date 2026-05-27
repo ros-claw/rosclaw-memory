@@ -574,6 +574,10 @@ class EmbodiedMemory:
             parent_obj_id=obj.parent_obj_id,
             state=obj.state,
             memory_id=mid,
+            occlusion_status=obj.occlusion_status,
+            last_confirmed_position=obj.last_confirmed_position,
+            confidence=obj.confidence,
+            last_seen_sec=obj.last_seen_sec,
         )
         self.world_object_store.save(obj)
         return obj.obj_id
@@ -671,6 +675,40 @@ class EmbodiedMemory:
         )
         self.add_atom(atom)
         return True
+
+    def sync_scene_objects(
+        self,
+        scene_id: str,
+        detections: List[WorldObject],
+        timestamp_sec: float,
+        occlusion_radius: float = 0.5,
+    ) -> "PermanenceReport":
+        """同步当前感知检测结果与世界对象存储
+
+        自动处理对象恒存逻辑：可见确认、遮挡衰减、消失判定、新对象添加。
+
+        Args:
+            scene_id: 场景 ID
+            detections: 当前帧检测到的对象列表
+            timestamp_sec: 当前时间戳（秒）
+            occlusion_radius: 空间重检测匹配半径（米）
+
+        Returns:
+            PermanenceReport
+        """
+        from .object_permanence import ObjectPermanenceTracker
+
+        tracker = ObjectPermanenceTracker(
+            self.world_object_store,
+            decay_rate=0.05,
+            missing_threshold=0.2,
+        )
+        return tracker.sync_detections(
+            scene_id=scene_id,
+            detections=detections,
+            timestamp_sec=timestamp_sec,
+            occlusion_radius=occlusion_radius,
+        )
 
     def search_world_objects(
         self,

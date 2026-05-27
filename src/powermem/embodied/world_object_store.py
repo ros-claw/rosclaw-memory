@@ -34,6 +34,7 @@ class WorldObjectStore:
     @staticmethod
     def _world_object_to_row(obj: WorldObject) -> Tuple:
         """将 WorldObject 分解为 SQL 参数元组"""
+        lcp = obj.last_confirmed_position
         return (
             obj.obj_id,
             obj.obj_type,
@@ -54,24 +55,55 @@ class WorldObjectStore:
             obj.parent_obj_id,
             obj.state,
             obj.memory_id,
+            obj.occlusion_status,
+            lcp.x if lcp else None,
+            lcp.y if lcp else None,
+            lcp.z if lcp else None,
+            obj.confidence,
+            obj.last_seen_sec,
         )
 
     @staticmethod
     def _row_to_world_object(row: Tuple) -> WorldObject:
         """从 DB 行还原 WorldObject"""
-        (
-            obj_id, obj_type, name,
-            pos_x, pos_y, pos_z,
-            orient_w, orient_x, orient_y, orient_z,
-            size_json, color_json, mesh_path,
-            physics_props_json, semantic_tags_json,
-            scene_id, parent_obj_id, state, memory_id,
-        ) = row
+        # 兼容旧 schema：如果没有新列，使用默认值
+        if len(row) == 19:
+            (
+                obj_id, obj_type, name,
+                pos_x, pos_y, pos_z,
+                orient_w, orient_x, orient_y, orient_z,
+                size_json, color_json, mesh_path,
+                physics_props_json, semantic_tags_json,
+                scene_id, parent_obj_id, state, memory_id,
+            ) = row
+            occlusion_status = "visible"
+            last_confirmed_pos_x = last_confirmed_pos_y = last_confirmed_pos_z = None
+            confidence = 1.0
+            last_seen_sec = 0.0
+        else:
+            (
+                obj_id, obj_type, name,
+                pos_x, pos_y, pos_z,
+                orient_w, orient_x, orient_y, orient_z,
+                size_json, color_json, mesh_path,
+                physics_props_json, semantic_tags_json,
+                scene_id, parent_obj_id, state, memory_id,
+                occlusion_status,
+                last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z,
+                confidence, last_seen_sec,
+            ) = row
 
         size = tuple(json.loads(size_json)) if size_json else None
         color = tuple(json.loads(color_json)) if color_json else None
         physics_props = json.loads(physics_props_json) if physics_props_json else {}
         semantic_tags = json.loads(semantic_tags_json) if semantic_tags_json else []
+        lcp = None
+        if last_confirmed_pos_x is not None:
+            lcp = Vec3(
+                float(last_confirmed_pos_x),
+                float(last_confirmed_pos_y),
+                float(last_confirmed_pos_z),
+            )
 
         return WorldObject(
             obj_id=obj_id,
@@ -93,6 +125,10 @@ class WorldObjectStore:
             parent_obj_id=parent_obj_id,
             state=state or "present",
             memory_id=int(memory_id) if memory_id is not None else None,
+            occlusion_status=occlusion_status or "visible",
+            last_confirmed_position=lcp,
+            confidence=float(confidence) if confidence is not None else 1.0,
+            last_seen_sec=float(last_seen_sec) if last_seen_sec is not None else 0.0,
         )
 
     # -----------------------------------------------------------------------
@@ -109,8 +145,11 @@ class WorldObjectStore:
                 orient_w, orient_x, orient_y, orient_z,
                 size_json, color_json, mesh_path,
                 physics_props_json, semantic_tags_json,
-                scene_id, parent_obj_id, state, memory_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                scene_id, parent_obj_id, state, memory_id,
+                occlusion_status,
+                last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z,
+                confidence, last_seen_sec
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(obj_id) DO UPDATE SET
                 obj_type = excluded.obj_type,
                 name = excluded.name,
@@ -125,7 +164,13 @@ class WorldObjectStore:
                 scene_id = excluded.scene_id,
                 parent_obj_id = excluded.parent_obj_id,
                 state = excluded.state,
-                memory_id = excluded.memory_id
+                memory_id = excluded.memory_id,
+                occlusion_status = excluded.occlusion_status,
+                last_confirmed_pos_x = excluded.last_confirmed_pos_x,
+                last_confirmed_pos_y = excluded.last_confirmed_pos_y,
+                last_confirmed_pos_z = excluded.last_confirmed_pos_z,
+                confidence = excluded.confidence,
+                last_seen_sec = excluded.last_seen_sec
         """
         cursor.execute(sql, self._world_object_to_row(obj))
         self.db_conn.commit()
@@ -140,7 +185,9 @@ class WorldObjectStore:
             "orient_w, orient_x, orient_y, orient_z, "
             "size_json, color_json, mesh_path, "
             "physics_props_json, semantic_tags_json, "
-            "scene_id, parent_obj_id, state, memory_id "
+            "scene_id, parent_obj_id, state, memory_id, "
+            "occlusion_status, last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z, "
+            "confidence, last_seen_sec "
             "FROM embodied_world_objects WHERE obj_id = ?",
             (obj_id,),
         )
@@ -160,7 +207,9 @@ class WorldObjectStore:
             "orient_w, orient_x, orient_y, orient_z, "
             "size_json, color_json, mesh_path, "
             "physics_props_json, semantic_tags_json, "
-            "scene_id, parent_obj_id, state, memory_id "
+            "scene_id, parent_obj_id, state, memory_id, "
+            "occlusion_status, last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z, "
+            "confidence, last_seen_sec "
             "FROM embodied_world_objects WHERE obj_id IN (" + placeholders + ")",
             tuple(obj_ids),
         )
@@ -180,7 +229,9 @@ class WorldObjectStore:
                 "orient_w, orient_x, orient_y, orient_z, "
                 "size_json, color_json, mesh_path, "
                 "physics_props_json, semantic_tags_json, "
-                "scene_id, parent_obj_id, state, memory_id "
+                "scene_id, parent_obj_id, state, memory_id, "
+                "occlusion_status, last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z, "
+                "confidence, last_seen_sec "
                 "FROM embodied_world_objects WHERE scene_id = ? AND obj_type = ? LIMIT ?",
                 (scene_id, obj_type, limit),
             )
@@ -190,7 +241,9 @@ class WorldObjectStore:
                 "orient_w, orient_x, orient_y, orient_z, "
                 "size_json, color_json, mesh_path, "
                 "physics_props_json, semantic_tags_json, "
-                "scene_id, parent_obj_id, state, memory_id "
+                "scene_id, parent_obj_id, state, memory_id, "
+                "occlusion_status, last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z, "
+                "confidence, last_seen_sec "
                 "FROM embodied_world_objects WHERE scene_id = ? LIMIT ?",
                 (scene_id, limit),
             )
@@ -210,7 +263,9 @@ class WorldObjectStore:
                 "orient_w, orient_x, orient_y, orient_z, "
                 "size_json, color_json, mesh_path, "
                 "physics_props_json, semantic_tags_json, "
-                "scene_id, parent_obj_id, state, memory_id "
+                "scene_id, parent_obj_id, state, memory_id, "
+                "occlusion_status, last_confirmed_pos_x, last_confirmed_pos_y, last_confirmed_pos_z, "
+                "confidence, last_seen_sec "
                 "FROM embodied_world_objects WHERE obj_type = ? AND scene_id = ? LIMIT ?",
                 (obj_type, scene_id, limit),
             )
@@ -227,31 +282,38 @@ class WorldObjectStore:
         return [self._row_to_world_object(row) for row in cursor.fetchall()]
 
     def update_pose(self, obj_id: str, pose: Pose, state: Optional[str] = None) -> bool:
-        """更新对象位姿和可选状态"""
+        """更新对象位姿和可选状态，同时重置遮挡置信度"""
         cursor = self.db_conn.cursor()
         if state is not None:
             cursor.execute(
                 "UPDATE embodied_world_objects SET "
                 "pos_x = ?, pos_y = ?, pos_z = ?, "
                 "orient_w = ?, orient_x = ?, orient_y = ?, orient_z = ?, "
-                "state = ? WHERE obj_id = ?",
+                "state = ?, occlusion_status = 'visible', confidence = 1.0, "
+                "last_confirmed_pos_x = ?, last_confirmed_pos_y = ?, last_confirmed_pos_z = ? "
+                "WHERE obj_id = ?",
                 (
                     pose.position.x, pose.position.y, pose.position.z,
                     pose.orientation.w, pose.orientation.x,
                     pose.orientation.y, pose.orientation.z,
-                    state, obj_id,
+                    state,
+                    pose.position.x, pose.position.y, pose.position.z,
+                    obj_id,
                 ),
             )
         else:
             cursor.execute(
                 "UPDATE embodied_world_objects SET "
                 "pos_x = ?, pos_y = ?, pos_z = ?, "
-                "orient_w = ?, orient_x = ?, orient_y = ?, orient_z = ? "
+                "orient_w = ?, orient_x = ?, orient_y = ?, orient_z = ?, "
+                "occlusion_status = 'visible', confidence = 1.0, "
+                "last_confirmed_pos_x = ?, last_confirmed_pos_y = ?, last_confirmed_pos_z = ? "
                 "WHERE obj_id = ?",
                 (
                     pose.position.x, pose.position.y, pose.position.z,
                     pose.orientation.w, pose.orientation.x,
                     pose.orientation.y, pose.orientation.z,
+                    pose.position.x, pose.position.y, pose.position.z,
                     obj_id,
                 ),
             )
@@ -264,6 +326,24 @@ class WorldObjectStore:
         cursor.execute(
             "UPDATE embodied_world_objects SET state = ? WHERE obj_id = ?",
             (state, obj_id),
+        )
+        self.db_conn.commit()
+        return cursor.rowcount > 0
+
+    def update_occlusion(
+        self,
+        obj_id: str,
+        occlusion_status: str,
+        confidence: float,
+        last_seen_sec: float,
+    ) -> bool:
+        """更新对象遮挡状态和存在置信度"""
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "UPDATE embodied_world_objects SET "
+            "occlusion_status = ?, confidence = ?, last_seen_sec = ? "
+            "WHERE obj_id = ?",
+            (occlusion_status, confidence, last_seen_sec, obj_id),
         )
         self.db_conn.commit()
         return cursor.rowcount > 0
