@@ -33,45 +33,40 @@ class VoxelHash:
 
     每个体素是一个 "桶"，存储落在此区域内的 memory_id 集合。
     查询时：先计算目标体素键，再查桶内精确距离过滤。
+
+    内部使用 (vx, vy, vz, frame_id) 元组作为键，避免字符串格式化/解析开销。
     """
 
     def __init__(self, voxel_size: float = 0.1):
         if voxel_size <= 0:
             raise ValueError("voxel_size must be positive")
         self.voxel_size = voxel_size
-        # voxel_key -> {memory_id}
-        self._buckets: Dict[str, Set[int]] = defaultdict(set)
-        # memory_id -> voxel_key（反向索引，用于删除）
-        self._id_to_key: Dict[int, str] = {}
+        # cell_key -> {memory_id}
+        self._buckets: Dict[Tuple[int, int, int, str], Set[int]] = defaultdict(set)
+        # memory_id -> cell_key（反向索引，用于删除）
+        self._id_to_cell: Dict[int, Tuple[int, int, int, str]] = {}
 
-    @staticmethod
-    def _key(vx: int, vy: int, vz: int, frame_id: str) -> str:
-        return f"{vx}:{vy}:{vz}:{frame_id}"
-
-    def _compute_key(self, x: float, y: float, z: float, frame_id: str) -> str:
+    def insert(self, memory_id: int, position: Vec3, frame_id: str = "world") -> Tuple[int, int, int, str]:
+        """插入一个记忆点到 Voxel Hash，返回 cell_key"""
         vs = self.voxel_size
-        return self._key(int(math.floor(x / vs)), int(math.floor(y / vs)), int(math.floor(z / vs)), frame_id)
-
-    def insert(self, memory_id: int, position: Vec3, frame_id: str = "world") -> str:
-        """插入一个记忆点到 Voxel Hash，返回 voxel_key"""
-        voxel_key = self._compute_key(position.x, position.y, position.z, frame_id)
+        cell = (int(math.floor(position.x / vs)), int(math.floor(position.y / vs)), int(math.floor(position.z / vs)), frame_id)
         # 如果已存在不同 key，先从旧桶移除
-        old_key = self._id_to_key.get(memory_id)
-        if old_key is not None and old_key != voxel_key:
-            self._buckets[old_key].discard(memory_id)
+        old = self._id_to_cell.get(memory_id)
+        if old is not None and old != cell:
+            self._buckets[old].discard(memory_id)
 
-        self._buckets[voxel_key].add(memory_id)
-        self._id_to_key[memory_id] = voxel_key
-        return voxel_key
+        self._buckets[cell].add(memory_id)
+        self._id_to_cell[memory_id] = cell
+        return cell
 
     def remove(self, memory_id: int) -> bool:
         """删除记忆点，返回是否成功"""
-        key = self._id_to_key.pop(memory_id, None)
-        if key is None:
+        cell = self._id_to_cell.pop(memory_id, None)
+        if cell is None:
             return False
-        self._buckets[key].discard(memory_id)
-        if not self._buckets[key]:
-            del self._buckets[key]
+        self._buckets[cell].discard(memory_id)
+        if not self._buckets[cell]:
+            del self._buckets[cell]
         return True
 
     def query_near(
@@ -89,27 +84,22 @@ class VoxelHash:
 
         candidates: Set[int] = set()
         total_voxels = (2 * r_cells + 1) ** 3
-        suffix = f":{frame_id}"
+        n_items = len(self._id_to_cell)
 
         # 稀疏数据优化：当存储对象数远少于需扫描体素数时，直接遍历对象而非空体素
-        if len(self._id_to_key) < total_voxels:
-            for memory_id, key in self._id_to_key.items():
-                if not key.endswith(suffix):
+        if n_items < total_voxels:
+            for memory_id, (vx, vy, vz, kf) in self._id_to_cell.items():
+                if kf != frame_id:
                     continue
-                # key format: "vx:vy:vz:frame_id"
-                vx_str, vy_str, vz_str, _ = key.split(":")
-                if (
-                    abs(int(vx_str) - cx) <= r_cells
-                    and abs(int(vy_str) - cy) <= r_cells
-                    and abs(int(vz_str) - cz) <= r_cells
-                ):
+                if abs(vx - cx) <= r_cells and abs(vy - cy) <= r_cells and abs(vz - cz) <= r_cells:
                     candidates.add(memory_id)
         else:
+            _buckets = self._buckets
             for dx in range(-r_cells, r_cells + 1):
                 for dy in range(-r_cells, r_cells + 1):
                     for dz in range(-r_cells, r_cells + 1):
-                        key = self._key(cx + dx, cy + dy, cz + dz, frame_id)
-                        candidates.update(self._buckets.get(key, set()))
+                        key = (cx + dx, cy + dy, cz + dz, frame_id)
+                        candidates.update(_buckets.get(key, set()))
         return candidates
 
     def query_exact(
@@ -148,10 +138,10 @@ class VoxelHash:
         return heapq.nsmallest(limit, hits, key=lambda x: x[1])
 
     def get_all_ids(self) -> Set[int]:
-        return set(self._id_to_key.keys())
+        return set(self._id_to_cell.keys())
 
     def stats(self) -> Dict[str, Any]:
-        total_ids = len(self._id_to_key)
+        total_ids = len(self._id_to_cell)
         total_buckets = len(self._buckets)
         avg_load = total_ids / max(total_buckets, 1)
         max_load = max((len(ids) for ids in self._buckets.values()), default=0)
@@ -215,15 +205,16 @@ class SpatialIndex:
         position: Vec3,
         frame_id: str = "world",
         voxel_key: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[int, int, int, str]:
         """添加空间索引条目（内存 + 异步持久化建议）
 
         注意：SeekDB 的 UPDATE 应由调用方在事务中执行，
-        本方法只负责内存 Voxel Hash 和返回 voxel_key。
+        本方法只负责内存 Voxel Hash 和返回 cell_key。
+        voxel_key 参数保留以兼容旧调用方，实际由 VoxelHash 内部重新计算。
         """
-        key = self.voxel.insert(memory_id, position, frame_id)
+        cell = self.voxel.insert(memory_id, position, frame_id)
         self._id_to_position[memory_id] = position
-        return key
+        return cell
 
     def remove(self, memory_id: int) -> bool:
         """删除空间索引条目"""
