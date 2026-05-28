@@ -34,6 +34,10 @@ class Vec3:
     def distance_to(self, other: Vec3) -> float:
         return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2 + (self.z - other.z) ** 2)
 
+    def distance_to_sq(self, other: Vec3) -> float:
+        """Squared Euclidean distance — faster when only comparing, not sorting by exact distance."""
+        return (self.x - other.x) ** 2 + (self.y - other.y) ** 2 + (self.z - other.z) ** 2
+
     def to_dict(self) -> Dict[str, float]:
         return {"x": self.x, "y": self.y, "z": self.z}
 

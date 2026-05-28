@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import heapq
 from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -117,26 +118,34 @@ class VoxelHash:
         radius: float,
         frame_id: str = "world",
         id_to_position: Optional[Dict[int, Vec3]] = None,
+        limit: int = 100,
     ) -> List[Tuple[int, float]]:
-        """精确球形范围查询 — 返回 [(memory_id, distance), ...] 按距离升序"""
-        candidates = self.query_near(center, radius, frame_id)
-        results: List[Tuple[int, float]] = []
+        """精确球形范围查询 — 返回 [(memory_id, distance), ...] 按距离升序
 
+        使用平方距离过滤避免 sqrt，并用堆实现 O(N log K) 部分排序。
+        """
+        candidates = self.query_near(center, radius, frame_id)
+        radius_sq = radius * radius
+
+        # Collect valid hits with squared distance first (no sqrt)
+        hits: List[Tuple[int, float]] = []
         for mid in candidates:
             if id_to_position is not None:
                 pos = id_to_position.get(mid)
                 if pos is None:
                     continue
             else:
-                # 如果没有提供位置映射，返回近似结果
-                results.append((mid, 0.0))
+                hits.append((mid, 0.0))
                 continue
-            dist = center.distance_to(pos)
-            if dist <= radius:
-                results.append((mid, dist))
+            dist_sq = center.distance_to_sq(pos)
+            if dist_sq <= radius_sq:
+                hits.append((mid, math.sqrt(dist_sq)))
 
-        results.sort(key=lambda x: x[1])
-        return results
+        # Partial sort with heapq — O(N log K) instead of O(N log N)
+        if len(hits) <= limit:
+            hits.sort(key=lambda x: x[1])
+            return hits
+        return heapq.nsmallest(limit, hits, key=lambda x: x[1])
 
     def get_all_ids(self) -> Set[int]:
         return set(self._id_to_key.keys())
@@ -231,8 +240,8 @@ class SpatialIndex:
         """球形范围查询，返回 [(memory_id, distance), ...] 按距离升序"""
         if not self._loaded:
             self.rebuild_from_db()
-        results = self.voxel.query_exact(center, radius, frame_id, self._id_to_position)
-        return results[:limit]
+        results = self.voxel.query_exact(center, radius, frame_id, self._id_to_position, limit=limit)
+        return results
 
     def get_all_ids(self) -> Set[int]:
         return self.voxel.get_all_ids()

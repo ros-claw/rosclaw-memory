@@ -102,21 +102,20 @@ class SceneGraph:
         self._built = False
 
     def build(self) -> None:
-        """从 store 加载所有对象与关系"""
+        """从 store 加载所有对象与关系（单次批量查询）"""
         objs = self.store.list_by_scene(self.scene_id, limit=10000)
         self._objects = {o.obj_id: o for o in objs}
-        self._relations = []
-        for oid in self._objects:
-            self._relations.extend(self.store.get_relations(oid, direction="both"))
 
-        # 去重关系
+        # 批量加载场景内所有关系（一次 IN 查询，避免 N 次单点查询）
+        scene_rels_map = self.store.get_scene_graph(self.scene_id)
         seen = set()
         unique_rels = []
-        for rel in self._relations:
-            key = (rel.subject_id, rel.object_id, rel.relation)
-            if key not in seen:
-                seen.add(key)
-                unique_rels.append(rel)
+        for rel_list in scene_rels_map.values():
+            for rel in rel_list:
+                key = (rel.subject_id, rel.object_id, rel.relation)
+                if key not in seen:
+                    seen.add(key)
+                    unique_rels.append(rel)
         self._relations = unique_rels
 
         # 按父对象分组（层级）
