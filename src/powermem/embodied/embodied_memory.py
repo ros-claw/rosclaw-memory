@@ -323,6 +323,60 @@ class EmbodiedMemory:
     def _invalidate_atom_cache(self, memory_id: int) -> None:
         self._atom_cache.pop(memory_id, None)
 
+    def get_atoms(self, memory_ids: List[int]) -> List[Optional[MemoryAtom]]:
+        """批量读取记忆并还原为 MemoryAtom（带 LRU 缓存）
+
+        比连续调用 get_atom() 更高效：
+        1. 单次遍历检查缓存
+        2. 对缓存缺失批量查询底层存储（若存储后端支持 get_many）
+        3. 单次缓存驱逐
+        """
+        if not memory_ids:
+            return []
+
+        # 1. 缓存命中筛选
+        cached: Dict[int, MemoryAtom] = {}
+        missing: List[int] = []
+        for mid in memory_ids:
+            atom = self._atom_cache.get(mid)
+            if atom is not None:
+                cached[mid] = atom
+            else:
+                missing.append(mid)
+
+        # 2. 批量加载缺失项
+        if missing:
+            storage = self.memory.storage
+            if hasattr(storage, "get_many_memories"):
+                raw_items = storage.get_many_memories(missing)
+            else:
+                raw_items = [storage.get_memory(mid) for mid in missing]
+
+            for mid, raw in zip(missing, raw_items):
+                if raw is None:
+                    continue
+                atom = MemoryAtom.from_metadata(
+                    content=raw.get("data", raw.get("content", "")),
+                    metadata=raw.get("metadata", {}),
+                    memory_id=mid,
+                    user_id=raw.get("user_id"),
+                    agent_id=raw.get("agent_id"),
+                    run_id=raw.get("run_id"),
+                    created_at=raw.get("created_at"),
+                    updated_at=raw.get("updated_at"),
+                )
+                cached[mid] = atom
+                self._atom_cache[mid] = atom
+
+        # 3. 统一缓存驱逐（避免多次小驱逐）
+        if len(self._atom_cache) > self._MAX_ATOM_CACHE:
+            to_evict = list(self._atom_cache.keys())[: self._MAX_ATOM_CACHE // 4]
+            for k in to_evict:
+                del self._atom_cache[k]
+
+        # 4. 按输入顺序返回
+        return [cached.get(mid) for mid in memory_ids]
+
     # ========================================================================
     # 检索接口
     # ========================================================================
@@ -361,13 +415,14 @@ class EmbodiedMemory:
     ) -> List[MemoryAtom]:
         """纯空间范围查询"""
         hits = self.spatial_index.query_radius(center, radius, frame_id, limit=limit)
-        atoms: List[MemoryAtom] = []
-        for mid, dist in hits:
-            atom = self.get_atom(mid)
-            if atom:
+        ids = [mid for mid, _ in hits]
+        atoms = self.get_atoms(ids)
+        results: List[MemoryAtom] = []
+        for (mid, dist), atom in zip(hits, atoms):
+            if atom is not None:
                 atom.embodied_meta["_spatial_distance"] = dist
-                atoms.append(atom)
-        return atoms
+                results.append(atom)
+        return results
 
     def search_temporal(
         self,
@@ -381,12 +436,8 @@ class EmbodiedMemory:
             hits = self.temporal_index.query_overlapping(interval, frame_id, limit=limit)
         else:
             hits = self.temporal_index.query(interval, relation, frame_id, limit=limit)
-        atoms: List[MemoryAtom] = []
-        for mid, _ in hits:
-            atom = self.get_atom(mid)
-            if atom:
-                atoms.append(atom)
-        return atoms
+        ids = [mid for mid, _ in hits]
+        return [a for a in self.get_atoms(ids) if a is not None]
 
     # ========================================================================
     # 传感器接入
@@ -496,20 +547,20 @@ class EmbodiedMemory:
         策略：先用空间索引缩小范围，再过滤 physical_type="constraint"
         """
         hits = self.spatial_index.query_radius(center, radius, limit=limit * 3)
-        atoms: List[MemoryAtom] = []
-        for mid, _ in hits:
-            atom = self.get_atom(mid)
+        ids = [mid for mid, _ in hits]
+        atoms = self.get_atoms(ids)
+        results: List[MemoryAtom] = []
+        for atom in atoms:
             if atom is None:
                 continue
-            # 过滤约束类型
             if atom.embodied_meta.get("physical_type") != "constraint":
                 continue
             if constraint_type is not None:
                 c = atom.embodied_meta.get("constraint", {})
                 if c.get("constraint_type") != constraint_type:
                     continue
-            atoms.append(atom)
-        return atoms[:limit]
+            results.append(atom)
+        return results[:limit]
 
     # ========================================================================
     # 动作/轨迹经验记忆
@@ -588,17 +639,18 @@ class EmbodiedMemory:
     ) -> List[MemoryAtom]:
         """检索空间区域内的历史动作经验（含结果）"""
         hits = self.spatial_index.query_radius(center, radius, limit=limit * 3)
-        atoms: List[MemoryAtom] = []
-        for mid, _ in hits:
-            atom = self.get_atom(mid)
+        ids = [mid for mid, _ in hits]
+        atoms = self.get_atoms(ids)
+        results: List[MemoryAtom] = []
+        for atom in atoms:
             if atom is None:
                 continue
             if atom.action.value not in ("act", "correct"):
                 continue
             if action_type is not None and atom.action.value != action_type:
                 continue
-            atoms.append(atom)
-        return atoms[:limit]
+            results.append(atom)
+        return results[:limit]
 
     # ========================================================================
     # 世界对象记忆
@@ -903,10 +955,11 @@ class EmbodiedMemory:
         # 1. 空间粗筛（扩大半径以覆盖轨迹两端可能偏离中点的情况）
         coarse_radius = radius * 2.0
         hits = self.spatial_index.query_radius(center, coarse_radius, limit=limit * 5)
+        ids = [mid for mid, _ in hits]
+        atoms = self.get_atoms(ids)
 
         results: List[Tuple[MemoryAtom, float]] = []
-        for mid, _ in hits:
-            atom = self.get_atom(mid)
+        for atom in atoms:
             if atom is None:
                 continue
             traj = atom.embodied_meta.get("trajectory")
@@ -961,15 +1014,16 @@ class EmbodiedMemory:
             hits = self.temporal_index.query_overlapping(interval, limit=limit * 3)
         else:
             hits = self.temporal_index.query(interval, relation, limit=limit * 3)
-        atoms: List[MemoryAtom] = []
-        for mid, _ in hits:
-            atom = self.get_atom(mid)
+        ids = [mid for mid, _ in hits]
+        atoms = self.get_atoms(ids)
+        results: List[MemoryAtom] = []
+        for atom in atoms:
             if atom is None:
                 continue
             if "trajectory" not in atom.embodied_meta:
                 continue
-            atoms.append(atom)
-        return atoms[:limit]
+            results.append(atom)
+        return results[:limit]
 
     def search_similar_trajectories(
         self,
@@ -1039,10 +1093,10 @@ class EmbodiedMemory:
                     len(candidate_ids),
                 )
 
-        # 2. 签名预过滤 + DTW 精排
+        # 2. 签名预过滤 + DTW 精排（先批量加载 atom，再处理）
+        candidate_atoms = self.get_atoms(list(candidate_ids))
         results: List[Tuple[MemoryAtom, float]] = []
-        for mid in candidate_ids:
-            atom = self.get_atom(mid)
+        for atom in candidate_atoms:
             if atom is None:
                 continue
             traj_meta = atom.embodied_meta.get("trajectory")
@@ -1187,12 +1241,8 @@ class EmbodiedMemory:
             "SELECT cause_memory_id FROM embodied_causal_edges WHERE effect_memory_id = ? LIMIT ?",
             (memory_id, limit),
         )
-        atoms: List[MemoryAtom] = []
-        for (cause_id,) in cursor.fetchall():
-            atom = self.get_atom(int(cause_id))
-            if atom:
-                atoms.append(atom)
-        return atoms
+        ids = [int(row[0]) for row in cursor.fetchall()]
+        return [a for a in self.get_atoms(ids) if a is not None]
 
     def get_effects(self, memory_id: int, limit: int = 10) -> List[MemoryAtom]:
         """获取指定记忆的结果记忆"""
@@ -1201,12 +1251,8 @@ class EmbodiedMemory:
             "SELECT effect_memory_id FROM embodied_causal_edges WHERE cause_memory_id = ? LIMIT ?",
             (memory_id, limit),
         )
-        atoms: List[MemoryAtom] = []
-        for (effect_id,) in cursor.fetchall():
-            atom = self.get_atom(int(effect_id))
-            if atom:
-                atoms.append(atom)
-        return atoms
+        ids = [int(row[0]) for row in cursor.fetchall()]
+        return [a for a in self.get_atoms(ids) if a is not None]
 
     # ========================================================================
     # 经验图与概念索引（Tri-Route System-2 基础设施）

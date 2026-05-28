@@ -29,6 +29,9 @@ class _MockStorageAdapter:
     def get_memory(self, memory_id: int) -> Any:
         return self._store.get(memory_id)
 
+    def get_many_memories(self, memory_ids):
+        return [self._store.get(mid) for mid in memory_ids]
+
     def delete_memory(self, memory_id: int, **kwargs) -> bool:
         return self._store.pop(memory_id, None) is not None
 

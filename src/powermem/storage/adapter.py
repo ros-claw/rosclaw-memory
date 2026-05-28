@@ -336,7 +336,89 @@ class StorageAdapter:
                     continue
 
         return None
-    
+
+    def get_many_memories(
+        self,
+        memory_ids: List[int],
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> List[Optional[Dict[str, Any]]]:
+        """Batch get memories by ID.
+
+        Tries vector_store.get_many() if available; otherwise falls back
+        to sequential get_memory() calls.  Missing IDs yield None.
+        """
+        if not memory_ids:
+            return []
+
+        # Fast path: vector store supports native batch get
+        if hasattr(self.vector_store, "get_many"):
+            try:
+                results = self.vector_store.get_many(memory_ids)
+            except Exception as e:
+                logger.debug(f"get_many failed on main store, falling back: {e}")
+                results = None
+
+            if results is not None:
+                out: List[Optional[Dict[str, Any]]] = []
+                for result in results:
+                    if result and result.payload:
+                        content = result.payload.get("data") or result.payload.get("content") or ""
+                        memory = {
+                            "id": result.id,
+                            "content": content,
+                            "user_id": result.payload.get("user_id"),
+                            "agent_id": result.payload.get("agent_id"),
+                            "run_id": result.payload.get("run_id"),
+                            "metadata": result.payload.get("metadata", {}),
+                            "created_at": result.payload.get("created_at"),
+                            "updated_at": result.payload.get("updated_at"),
+                        }
+                        if user_id and memory.get("user_id") != user_id:
+                            out.append(None)
+                        elif agent_id and memory.get("agent_id") != agent_id:
+                            out.append(None)
+                        else:
+                            out.append(memory)
+                    else:
+                        out.append(None)
+
+                # Fill in from sub stores for any misses
+                if self.sub_stores:
+                    for idx, mem in enumerate(out):
+                        if mem is not None:
+                            continue
+                        mid = memory_ids[idx]
+                        for sub_config in self.sub_stores.values():
+                            try:
+                                sub_result = sub_config.vector_store.get(mid)
+                                if sub_result and sub_result.payload:
+                                    content = sub_result.payload.get("data") or sub_result.payload.get("content") or ""
+                                    memory = {
+                                        "id": sub_result.id,
+                                        "content": content,
+                                        "user_id": sub_result.payload.get("user_id"),
+                                        "agent_id": sub_result.payload.get("agent_id"),
+                                        "run_id": sub_result.payload.get("run_id"),
+                                        "metadata": sub_result.payload.get("metadata", {}),
+                                        "created_at": sub_result.payload.get("created_at"),
+                                        "updated_at": sub_result.payload.get("updated_at"),
+                                    }
+                                    if user_id and memory.get("user_id") != user_id:
+                                        continue
+                                    if agent_id and memory.get("agent_id") != agent_id:
+                                        continue
+                                    out[idx] = memory
+                                    break
+                            except Exception as e:
+                                logger.debug(f"Error searching in sub store {sub_config.name}: {e}")
+                                continue
+
+                return out
+
+        # Fallback: sequential get
+        return [self.get_memory(mid, user_id, agent_id) for mid in memory_ids]
+
     def update_memory(
         self,
         memory_id: int,

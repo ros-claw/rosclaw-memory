@@ -215,20 +215,45 @@ class SQLiteVectorStore(VectorStoreBase):
             cursor = self.connection.execute(f"""
                 SELECT id, vector, payload FROM {self.collection_name} WHERE id = ?
             """, (vector_id,))
-            
+
             row = cursor.fetchone()
             if row:
                 vector_id, vector_str, payload_str = row
                 vector = json.loads(vector_str)
                 payload = json.loads(payload_str)
-                
+
                 return OutputData(
                     id=vector_id,
                     score=1.0,  # Exact match
                     payload=payload
                 )
-        
+
         return None
+
+    def get_many(self, vector_ids: List[int]) -> List[Optional[OutputData]]:
+        """Batch retrieve vectors by ID — single round-trip vs N individual queries."""
+        if not vector_ids:
+            return []
+
+        placeholders = ",".join("?" * len(vector_ids))
+        results: Dict[int, Optional[OutputData]] = {vid: None for vid in vector_ids}
+
+        with self._lock:
+            cursor = self.connection.execute(
+                f"SELECT id, vector, payload FROM {self.collection_name} WHERE id IN ({placeholders})",
+                tuple(vector_ids),
+            )
+            for row in cursor.fetchall():
+                vid, vector_str, payload_str = row
+                vector = json.loads(vector_str)
+                payload = json.loads(payload_str)
+                results[vid] = OutputData(
+                    id=vid,
+                    score=1.0,
+                    payload=payload,
+                )
+
+        return [results[vid] for vid in vector_ids]
     
     def list_cols(self) -> List[str]:
         """List all collections (tables)."""

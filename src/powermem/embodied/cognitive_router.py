@@ -209,11 +209,18 @@ class CognitiveRouter:
         # 综合重排
         ranked = self._rerank(merged, spatial_center, temporal_interval)
 
-        # 加载 atom 并返回
+        # 批量加载 atom 并返回
+        to_load = [cand.memory_id for cand in ranked[:limit] if cand.atom is None]
+        loaded_atoms = {}
+        if to_load:
+            for mid, atom in zip(to_load, self.em.get_atoms(to_load)):
+                if atom is not None:
+                    loaded_atoms[mid] = atom
+
         results: List[MemoryAtom] = []
         for cand in ranked[:limit]:
             if cand.atom is None:
-                cand.atom = self.em.get_atom(cand.memory_id)
+                cand.atom = loaded_atoms.get(cand.memory_id)
             if cand.atom is not None:
                 results.append(cand.atom)
         return results

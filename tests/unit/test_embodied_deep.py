@@ -96,6 +96,9 @@ class MockStorageAdapter:
     def get_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
         return self._store.get(memory_id)
 
+    def get_many_memories(self, memory_ids):
+        return [self._store.get(mid) for mid in memory_ids]
+
     def delete_memory(self, memory_id: int, user_id=None, agent_id=None) -> bool:
         return self._store.pop(memory_id, None) is not None
 
@@ -2055,3 +2058,90 @@ class TestBatchOperations:
         batch_time = time.perf_counter() - t0
 
         assert batch_time < seq_time * 0.85, f"batch {batch_time:.3f}s not faster than seq {seq_time:.3f}s"
+
+
+class TestBatchAtomLoading:
+    """get_atoms 批量读取测试"""
+
+    def test_get_atoms_basic(self, embodied_memory):
+        mids = []
+        for i in range(10):
+            mid = embodied_memory.add_atom(MemoryAtom(content=f"atom_{i}"))
+            mids.append(mid)
+
+        atoms = embodied_memory.get_atoms(mids)
+        assert len(atoms) == 10
+        for i, atom in enumerate(atoms):
+            assert atom is not None
+            assert atom.content == f"atom_{i}"
+
+    def test_get_atoms_with_cache_hits(self, embodied_memory):
+        mid = embodied_memory.add_atom(MemoryAtom(content="cached"))
+        # 第一次读取填充缓存
+        embodied_memory.get_atom(mid)
+        # 第二次批量读取应命中缓存
+        atoms = embodied_memory.get_atoms([mid])
+        assert len(atoms) == 1
+        assert atoms[0] is not None
+        assert atoms[0].content == "cached"
+
+    def test_get_atoms_missing_ids(self, embodied_memory):
+        existing = embodied_memory.add_atom(MemoryAtom(content="exists"))
+        atoms = embodied_memory.get_atoms([existing, 999999])
+        assert atoms[0] is not None
+        assert atoms[0].content == "exists"
+        assert atoms[1] is None
+
+    def test_get_atoms_maintains_order(self, embodied_memory):
+        mids = []
+        for i in range(5):
+            mids.append(embodied_memory.add_atom(MemoryAtom(content=f"order_{i}")))
+        # 逆序查询
+        atoms = embodied_memory.get_atoms(list(reversed(mids)))
+        for i, atom in enumerate(atoms):
+            assert atom is not None
+            assert atom.content == f"order_{4 - i}"
+
+    def test_get_atoms_populates_cache(self, embodied_memory):
+        mid = embodied_memory.add_atom(MemoryAtom(content="fill_cache"))
+        # 缓存应为空
+        embodied_memory._atom_cache.pop(mid, None)
+        assert mid not in embodied_memory._atom_cache
+        # 批量读取后应填充缓存
+        embodied_memory.get_atoms([mid])
+        assert mid in embodied_memory._atom_cache
+
+    def test_get_atoms_batch_reduces_storage_calls(self, embodied_memory):
+        mids = []
+        for i in range(10):
+            mids.append(embodied_memory.add_atom(MemoryAtom(content=f"batch_{i}")))
+        embodied_memory._atom_cache.clear()
+
+        # 统计 sequential 的 storage.get_memory 调用次数
+        original_get = embodied_memory.memory.storage.get_memory
+        seq_calls = 0
+        def counting_get(mid):
+            nonlocal seq_calls
+            seq_calls += 1
+            return original_get(mid)
+        embodied_memory.memory.storage.get_memory = counting_get
+        for mid in mids:
+            embodied_memory.get_atom(mid)
+
+        # 统计 batch 的 get_many_memories 调用次数
+        batch_calls = 0
+        original_get_many = embodied_memory.memory.storage.get_many_memories
+        def counting_get_many(mids):
+            nonlocal batch_calls
+            batch_calls += 1
+            return original_get_many(mids)
+        embodied_memory.memory.storage.get_many_memories = counting_get_many
+        embodied_memory._atom_cache.clear()
+        embodied_memory.get_atoms(mids)
+
+        # 恢复
+        embodied_memory.memory.storage.get_memory = original_get
+        embodied_memory.memory.storage.get_many_memories = original_get_many
+
+        assert seq_calls == len(mids)
+        assert batch_calls == 1
