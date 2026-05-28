@@ -43,6 +43,8 @@ class ModelStore:
 
     def __init__(self, db_conn: Any):
         self.db_conn = db_conn
+        self._collision_cache: Dict[str, List[tuple]] = {}
+        self._config_collision_cache: Dict[str, List[tuple]] = {}
 
     # -----------------------------------------------------------------------
     # 写入
@@ -106,11 +108,20 @@ class ModelStore:
         try:
             cursor.execute(sql, params)
             self.db_conn.commit()
+            self._invalidate_collision_caches(model_id)
             logger.debug("Saved physical model %s (%s)", model_id, model_type)
         except Exception as e:
             logger.warning("Failed to save model %s: %s", model_id, e)
             raise
         return model_id
+
+    def _invalidate_collision_caches(self, model_id: str) -> None:
+        """模型变更后清除碰撞缓存"""
+        self._collision_cache.pop(model_id, None)
+        prefix = f"{model_id}:"
+        keys_to_remove = [k for k in self._config_collision_cache if k.startswith(prefix)]
+        for k in keys_to_remove:
+            del self._config_collision_cache[k]
 
     def _auto_model_id(self, result: ParseResult) -> str:
         """自动生成 model_id：格式_关节数_哈希前8位"""
@@ -264,6 +275,7 @@ class ModelStore:
                 (model_id,),
             )
             self.db_conn.commit()
+            self._invalidate_collision_caches(model_id)
             return cursor.rowcount > 0
         except Exception as e:
             logger.warning("Failed to delete model %s: %s", model_id, e)
@@ -284,18 +296,23 @@ class ModelStore:
         return checker
 
     def check_self_collision(self, model_id: str) -> List[tuple]:
-        """检测模型自碰撞，返回相交的碰撞体对"""
+        """检测模型自碰撞，返回相交的碰撞体对（带缓存）"""
+        cached = self._collision_cache.get(model_id)
+        if cached is not None:
+            return list(cached)
         checker = self.build_checker(model_id)
         if checker is None:
             return []
-        return checker.check_intersections()
+        result = checker.check_intersections()
+        self._collision_cache[model_id] = result
+        return result
 
     def check_collision_at_config(
         self,
         model_id: str,
         joint_angles: List[float],
     ) -> List[tuple]:
-        """在指定关节角配置下检测碰撞（世界坐标系）
+        """在指定关节角配置下检测碰撞（世界坐标系，带缓存）
 
         Args:
             model_id: 模型 ID
@@ -305,6 +322,12 @@ class ModelStore:
             相交的碰撞体对列表
         """
         from .kinematics import forward_kinematics, transform_collision_bodies
+
+        config_hash = hashlib.sha256(str(tuple(joint_angles)).encode()).hexdigest()[:16]
+        cache_key = f"{model_id}:{config_hash}"
+        cached = self._config_collision_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
 
         model = self.load(model_id)
         if model is None or not model.collision_bodies:
@@ -321,4 +344,6 @@ class ModelStore:
 
         checker = CollisionChecker()
         checker.add_bodies(world_bodies)
-        return checker.check_intersections()
+        result = checker.check_intersections()
+        self._config_collision_cache[cache_key] = result
+        return result

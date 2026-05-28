@@ -16,6 +16,7 @@ Uses SQLite in-memory + mock PowerMem storage.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
@@ -2366,3 +2367,143 @@ class TestCacheAndForgetting:
         assert len(embodied_memory._atom_cache) == 0
         assert len(embodied_memory._scene_graph_cache) == 0
         assert "spatial" in stats
+
+
+# ========================================================================
+# 13. Collision Result Caching
+# ========================================================================
+
+class TestCollisionResultCaching:
+    """碰撞检测结果缓存测试"""
+
+    @pytest.fixture
+    def store(self, sqlite_conn):
+        from powermem.embodied.model_store import ModelStore
+        return ModelStore(sqlite_conn)
+
+    @pytest.fixture
+    def non_colliding_model(self, store):
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        result = ParseResult()
+        result.format = "urdf"
+        result.dynamics = RobotDynamics(
+            joint_names=["j1"],
+            dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+            joint_limits=[JointLimit()],
+            collision_geoms=[
+                {"type": "sphere", "link": "a", "center": [0.5, 0, 0], "radius": 0.2},
+                {"type": "sphere", "link": "a", "center": [1.5, 0, 0], "radius": 0.2},
+            ],
+        )
+        store.save(result, model_id="cache_no_col")
+        return "cache_no_col"
+
+    @pytest.fixture
+    def colliding_model(self, store):
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        result = ParseResult()
+        result.format = "urdf"
+        result.dynamics = RobotDynamics(
+            joint_names=["j1"],
+            dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+            joint_limits=[JointLimit()],
+            collision_geoms=[
+                {"type": "sphere", "link": "a", "center": [0.5, 0, 0], "radius": 0.4},
+                {"type": "sphere", "link": "a", "center": [0.8, 0, 0], "radius": 0.4},
+            ],
+        )
+        store.save(result, model_id="cache_col")
+        return "cache_col"
+
+    def test_self_collision_cache_hit(self, store, non_colliding_model):
+        # First call populates cache
+        r1 = store.check_self_collision(non_colliding_model)
+        assert len(r1) == 0
+        assert non_colliding_model in store._collision_cache
+
+        # Second call hits cache (no load from DB)
+        r2 = store.check_self_collision(non_colliding_model)
+        assert r2 == r1
+
+    def test_self_collision_cache_invalidated_on_save(self, store, non_colliding_model):
+        store.check_self_collision(non_colliding_model)
+        assert non_colliding_model in store._collision_cache
+
+        # Re-save same model with different geoms
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        result = ParseResult()
+        result.format = "urdf"
+        result.dynamics = RobotDynamics(
+            joint_names=["j1"],
+            dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+            joint_limits=[JointLimit()],
+            collision_geoms=[
+                {"type": "sphere", "link": "a", "center": [0.5, 0, 0], "radius": 0.4},
+                {"type": "sphere", "link": "a", "center": [0.8, 0, 0], "radius": 0.4},
+            ],
+        )
+        store.save(result, model_id=non_colliding_model)
+        assert non_colliding_model not in store._collision_cache
+
+        # Recompute should now find collision
+        r3 = store.check_self_collision(non_colliding_model)
+        assert len(r3) == 1
+
+    def test_self_collision_cache_invalidated_on_delete(self, store, non_colliding_model):
+        store.check_self_collision(non_colliding_model)
+        assert non_colliding_model in store._collision_cache
+
+        store.delete(non_colliding_model)
+        assert non_colliding_model not in store._collision_cache
+
+    def test_config_collision_cache_hit(self, store, non_colliding_model):
+        angles = [0.0]
+        r1 = store.check_collision_at_config(non_colliding_model, angles)
+        assert len(r1) == 0
+
+        cache_key = f"{non_colliding_model}:{hashlib.sha256(str(tuple(angles)).encode()).hexdigest()[:16]}"
+        assert cache_key in store._config_collision_cache
+
+        r2 = store.check_collision_at_config(non_colliding_model, angles)
+        assert r2 == r1
+
+    def test_config_collision_cache_different_configs(self, store, colliding_model):
+        # Two different configs should have separate cache entries
+        r1 = store.check_collision_at_config(colliding_model, [0.0])
+        r2 = store.check_collision_at_config(colliding_model, [0.5])
+
+        assert len(r1) == 1
+        # Slight config change may or may not still collide; cache keys differ regardless
+        assert len(store._config_collision_cache) == 2
+
+    def test_config_collision_cache_invalidated_on_save(self, store, non_colliding_model):
+        store.check_collision_at_config(non_colliding_model, [0.0])
+        assert len(store._config_collision_cache) == 1
+
+        # Re-save with overlapping geoms
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        result = ParseResult()
+        result.format = "urdf"
+        result.dynamics = RobotDynamics(
+            joint_names=["j1"],
+            dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+            joint_limits=[JointLimit()],
+            collision_geoms=[
+                {"type": "sphere", "link": "a", "center": [0.5, 0, 0], "radius": 0.4},
+                {"type": "sphere", "link": "a", "center": [0.8, 0, 0], "radius": 0.4},
+            ],
+        )
+        store.save(result, model_id=non_colliding_model)
+        assert len(store._config_collision_cache) == 0
+
+    def test_missing_model_returns_empty(self, store):
+        assert store.check_self_collision("nonexistent") == []
+        assert store.check_collision_at_config("nonexistent", [0.0]) == []
