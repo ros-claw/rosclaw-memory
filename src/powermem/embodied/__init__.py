@@ -109,6 +109,21 @@ from .background_daemon import BackgroundDaemon, DaemonConfig, DaemonStats
 # 遥测
 from .telemetry import MemoryTelemetry
 
+# Protocol 类型定义（v1.0 集成用）
+from .protocols import (
+    EmbodiedMemoryLike,
+    MemoryAtomLike,
+    PermanenceReportLike,
+    PoseLike,
+    QuaternionLike,
+    SceneGraphLike,
+    SpatialRelationLike,
+    TelemetryLike,
+    TemporalIntervalLike,
+    Vec3Like,
+    WorldObjectLike,
+)
+
 __all__ = [
     # types
     "AffectiveTag",
@@ -182,4 +197,16 @@ __all__ = [
     "DaemonStats",
     # telemetry
     "MemoryTelemetry",
+    # protocols (v1.0 type-safe integration)
+    "EmbodiedMemoryLike",
+    "MemoryAtomLike",
+    "PermanenceReportLike",
+    "PoseLike",
+    "QuaternionLike",
+    "SceneGraphLike",
+    "SpatialRelationLike",
+    "TelemetryLike",
+    "TemporalIntervalLike",
+    "Vec3Like",
+    "WorldObjectLike",
 ]
