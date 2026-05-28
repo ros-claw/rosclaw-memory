@@ -2507,3 +2507,109 @@ class TestCollisionResultCaching:
     def test_missing_model_returns_empty(self, store):
         assert store.check_self_collision("nonexistent") == []
         assert store.check_collision_at_config("nonexistent", [0.0]) == []
+
+    def test_model_cache_hit(self, store, non_colliding_model):
+        # First load populates cache
+        m1 = store.load(non_colliding_model)
+        assert m1 is not None
+        assert non_colliding_model in store._model_cache
+
+        # Second load hits cache
+        m2 = store.load(non_colliding_model)
+        assert m2 is m1  # same object
+
+    def test_model_cache_invalidated_on_save(self, store, non_colliding_model):
+        m1 = store.load(non_colliding_model)
+        assert non_colliding_model in store._model_cache
+
+        # Re-save same model_id
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        result = ParseResult()
+        result.format = "urdf"
+        result.dynamics = RobotDynamics(
+            joint_names=["j1"],
+            dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+            joint_limits=[JointLimit()],
+            collision_geoms=[
+                {"type": "sphere", "link": "a", "center": [0.5, 0, 0], "radius": 0.4},
+                {"type": "sphere", "link": "a", "center": [0.8, 0, 0], "radius": 0.4},
+            ],
+        )
+        store.save(result, model_id=non_colliding_model)
+        assert non_colliding_model not in store._model_cache
+
+    def test_model_cache_lru_eviction(self, store):
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        # Create more models than cache limit
+        limit = store._MAX_MODEL_CACHE
+        ids = []
+        for i in range(limit + 5):
+            result = ParseResult()
+            result.format = "urdf"
+            result.dynamics = RobotDynamics(
+                joint_names=["j1"],
+                dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+                joint_limits=[JointLimit()],
+                collision_geoms=[{"type": "sphere", "link": "a", "center": [i, 0, 0], "radius": 0.1}],
+            )
+            mid = store.save(result, model_id=f"lru_model_{i}")
+            ids.append(mid)
+            store.load(mid)  # populate cache
+
+        assert len(store._model_cache) <= limit
+        # Most recent should be present
+        assert ids[-1] in store._model_cache
+        # Oldest should be evicted
+        assert ids[0] not in store._model_cache
+
+    def test_collision_cache_lru_eviction(self, store):
+        from powermem.embodied.physical_model import DHParameter, JointLimit, RobotDynamics
+        from powermem.embodied.parsers.base import ParseResult
+
+        limit = store._MAX_COLLISION_CACHE
+        ids = []
+        for i in range(limit + 3):
+            result = ParseResult()
+            result.format = "urdf"
+            result.dynamics = RobotDynamics(
+                joint_names=["j1"],
+                dh_params=[DHParameter(d=0.0, theta=0.0, a=1.0, alpha=0.0)],
+                joint_limits=[JointLimit()],
+                collision_geoms=[{"type": "sphere", "link": "a", "center": [i, 0, 0], "radius": 0.1}],
+            )
+            mid = store.save(result, model_id=f"col_model_{i}")
+            ids.append(mid)
+            store.check_self_collision(mid)
+
+        assert len(store._collision_cache) <= limit
+        assert ids[-1] in store._collision_cache
+        assert ids[0] not in store._collision_cache
+
+    def test_config_cache_lru_eviction(self, store, non_colliding_model):
+        limit = store._MAX_CONFIG_CACHE
+        # Query many different configs for the same model
+        for i in range(limit + 3):
+            store.check_collision_at_config(non_colliding_model, [float(i) * 0.01])
+
+        assert len(store._config_collision_cache) <= limit
+        # Most recent config should be present
+        last_key = f"{non_colliding_model}:{hashlib.sha256(str(tuple([float(limit + 2) * 0.01])).encode()).hexdigest()[:16]}"
+        assert last_key in store._config_collision_cache
+        # Oldest should be evicted
+        first_key = f"{non_colliding_model}:{hashlib.sha256(str(tuple([0.0])).encode()).hexdigest()[:16]}"
+        assert first_key not in store._config_collision_cache
+
+    def test_model_cache_speeds_up_repeated_collision(self, store, non_colliding_model):
+        # Cold cache: first call loads from DB
+        store.check_self_collision(non_colliding_model)
+        assert store._model_cache
+
+        # Warm cache: subsequent calls should be faster (no DB load)
+        # We verify by checking load() returns cached object
+        m1 = store.load(non_colliding_model)
+        m2 = store.load(non_colliding_model)
+        assert m1 is m2

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -41,10 +42,15 @@ class ModelStore:
     - build_checker(): 从存储模型构建 CollisionChecker
     """
 
+    _MAX_COLLISION_CACHE = 64
+    _MAX_CONFIG_CACHE = 256
+    _MAX_MODEL_CACHE = 32
+
     def __init__(self, db_conn: Any):
         self.db_conn = db_conn
-        self._collision_cache: Dict[str, List[tuple]] = {}
-        self._config_collision_cache: Dict[str, List[tuple]] = {}
+        self._collision_cache: OrderedDict[str, List[tuple]] = OrderedDict()
+        self._config_collision_cache: OrderedDict[str, List[tuple]] = OrderedDict()
+        self._model_cache: OrderedDict[str, StoredModel] = OrderedDict()
 
     # -----------------------------------------------------------------------
     # 写入
@@ -108,16 +114,17 @@ class ModelStore:
         try:
             cursor.execute(sql, params)
             self.db_conn.commit()
-            self._invalidate_collision_caches(model_id)
+            self._invalidate_caches(model_id)
             logger.debug("Saved physical model %s (%s)", model_id, model_type)
         except Exception as e:
             logger.warning("Failed to save model %s: %s", model_id, e)
             raise
         return model_id
 
-    def _invalidate_collision_caches(self, model_id: str) -> None:
-        """模型变更后清除碰撞缓存"""
+    def _invalidate_caches(self, model_id: str) -> None:
+        """模型变更后清除所有相关缓存"""
         self._collision_cache.pop(model_id, None)
+        self._model_cache.pop(model_id, None)
         prefix = f"{model_id}:"
         keys_to_remove = [k for k in self._config_collision_cache if k.startswith(prefix)]
         for k in keys_to_remove:
@@ -141,7 +148,12 @@ class ModelStore:
     # -----------------------------------------------------------------------
 
     def load(self, model_id: str) -> Optional[StoredModel]:
-        """按 model_id 读取模型"""
+        """按 model_id 读取模型（带 LRU 缓存）"""
+        cached = self._model_cache.get(model_id)
+        if cached is not None:
+            self._model_cache.move_to_end(model_id)
+            return cached
+
         cursor = self.db_conn.cursor()
         cursor.execute(
             "SELECT model_type, joint_names, dh_params, mass_matrix, coriolis_matrix, "
@@ -185,13 +197,17 @@ class ModelStore:
         if collision_geoms:
             bodies = self._geoms_to_bodies(collision_geoms, model_id)
 
-        return StoredModel(
+        model = StoredModel(
             model_id=model_id,
             model_type=model_type or "robot",
             dynamics=dynamics,
             collision_bodies=bodies,
             source_hash=source_hash or "",
         )
+        self._model_cache[model_id] = model
+        while len(self._model_cache) > self._MAX_MODEL_CACHE:
+            self._model_cache.popitem(last=False)
+        return model
 
     def _geoms_to_bodies(
         self,
@@ -275,7 +291,7 @@ class ModelStore:
                 (model_id,),
             )
             self.db_conn.commit()
-            self._invalidate_collision_caches(model_id)
+            self._invalidate_caches(model_id)
             return cursor.rowcount > 0
         except Exception as e:
             logger.warning("Failed to delete model %s: %s", model_id, e)
@@ -299,12 +315,15 @@ class ModelStore:
         """检测模型自碰撞，返回相交的碰撞体对（带缓存）"""
         cached = self._collision_cache.get(model_id)
         if cached is not None:
+            self._collision_cache.move_to_end(model_id)
             return list(cached)
         checker = self.build_checker(model_id)
         if checker is None:
             return []
         result = checker.check_intersections()
         self._collision_cache[model_id] = result
+        while len(self._collision_cache) > self._MAX_COLLISION_CACHE:
+            self._collision_cache.popitem(last=False)
         return result
 
     def check_collision_at_config(
@@ -327,6 +346,7 @@ class ModelStore:
         cache_key = f"{model_id}:{config_hash}"
         cached = self._config_collision_cache.get(cache_key)
         if cached is not None:
+            self._config_collision_cache.move_to_end(cache_key)
             return list(cached)
 
         model = self.load(model_id)
@@ -346,4 +366,6 @@ class ModelStore:
         checker.add_bodies(world_bodies)
         result = checker.check_intersections()
         self._config_collision_cache[cache_key] = result
+        while len(self._config_collision_cache) > self._MAX_CONFIG_CACHE:
+            self._config_collision_cache.popitem(last=False)
         return result
