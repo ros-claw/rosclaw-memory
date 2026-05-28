@@ -106,6 +106,9 @@ from .schema import initialize_embodied_schema
 # 后台维护
 from .background_daemon import BackgroundDaemon, DaemonConfig, DaemonStats
 
+# 遥测
+from .telemetry import MemoryTelemetry
+
 __all__ = [
     # types
     "AffectiveTag",
@@ -177,4 +180,6 @@ __all__ = [
     "BackgroundDaemon",
     "DaemonConfig",
     "DaemonStats",
+    # telemetry
+    "MemoryTelemetry",
 ]

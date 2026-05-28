@@ -38,6 +38,7 @@ from .trajectory_similarity import (
 from .types import IntervalRelation, MemoryAction, Pose, Quaternion, SpatialRelation, TemporalInterval, Vec3, WorldObject
 from .world_object_store import WorldObjectStore
 from .cognitive_router import CognitiveRouter
+from .telemetry import MemoryTelemetry, _Timer
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,11 @@ class EmbodiedMemory:
         voxel_size: float = 0.1,
         enable_plugin: bool = True,
         plugin_config: Optional[Dict[str, Any]] = None,
+        telemetry: Optional[MemoryTelemetry] = None,
     ):
         self.memory = memory
         self.db_conn = db_conn
+        self._telemetry = telemetry
 
         # 初始化具身扩展 schema
         initialize_embodied_schema(db_conn)
@@ -82,7 +85,7 @@ class EmbodiedMemory:
         self.model_store = ModelStore(db_conn)
 
         # 世界对象存储
-        self.world_object_store = WorldObjectStore(db_conn)
+        self.world_object_store = WorldObjectStore(db_conn, telemetry=telemetry)
 
         # Tri-Route 认知检索路由器
         self._router = CognitiveRouter(self)
@@ -309,30 +312,35 @@ class EmbodiedMemory:
 
     def get_atom(self, memory_id: int) -> Optional[MemoryAtom]:
         """读取记忆并还原为 MemoryAtom（带 LRU 缓存）"""
-        cached = self._atom_cache.get(memory_id)
-        if cached is not None:
-            self._atom_cache.move_to_end(memory_id)
-            return cached
-        raw = self.memory.storage.get_memory(memory_id)
-        if raw is None:
-            return None
-        atom = MemoryAtom.from_metadata(
-            content=raw.get("data", raw.get("content", "")),
-            metadata=raw.get("metadata", {}),
-            memory_id=memory_id,
-            user_id=raw.get("user_id"),
-            agent_id=raw.get("agent_id"),
-            run_id=raw.get("run_id"),
-            created_at=raw.get("created_at"),
-            updated_at=raw.get("updated_at"),
-        )
-        self._atom_cache[memory_id] = atom
-        if len(self._atom_cache) > self._MAX_ATOM_CACHE:
-            # LRU 驱逐：删除最旧的 1/4 条目
-            to_evict = len(self._atom_cache) - self._MAX_ATOM_CACHE + self._MAX_ATOM_CACHE // 4
-            for _ in range(to_evict):
-                self._atom_cache.popitem(last=False)
-        return atom
+        with _Timer(self._telemetry, "atom_get"):
+            cached = self._atom_cache.get(memory_id)
+            if cached is not None:
+                self._atom_cache.move_to_end(memory_id)
+                if self._telemetry:
+                    self._telemetry.record_cache_hit("atom")
+                return cached
+            if self._telemetry:
+                self._telemetry.record_cache_miss("atom")
+            raw = self.memory.storage.get_memory(memory_id)
+            if raw is None:
+                return None
+            atom = MemoryAtom.from_metadata(
+                content=raw.get("data", raw.get("content", "")),
+                metadata=raw.get("metadata", {}),
+                memory_id=memory_id,
+                user_id=raw.get("user_id"),
+                agent_id=raw.get("agent_id"),
+                run_id=raw.get("run_id"),
+                created_at=raw.get("created_at"),
+                updated_at=raw.get("updated_at"),
+            )
+            self._atom_cache[memory_id] = atom
+            if len(self._atom_cache) > self._MAX_ATOM_CACHE:
+                # LRU 驱逐：删除最旧的 1/4 条目
+                to_evict = len(self._atom_cache) - self._MAX_ATOM_CACHE + self._MAX_ATOM_CACHE // 4
+                for _ in range(to_evict):
+                    self._atom_cache.popitem(last=False)
+            return atom
 
     def _invalidate_atom_cache(self, memory_id: int) -> None:
         self._atom_cache.pop(memory_id, None)
@@ -435,15 +443,16 @@ class EmbodiedMemory:
         limit: int = 30,
     ) -> List[MemoryAtom]:
         """纯空间范围查询"""
-        hits = self.spatial_index.query_radius(center, radius, frame_id, limit=limit)
-        ids = [mid for mid, _ in hits]
-        atoms = self.get_atoms(ids)
-        results: List[MemoryAtom] = []
-        for (mid, dist), atom in zip(hits, atoms):
-            if atom is not None:
-                atom.embodied_meta["_spatial_distance"] = dist
-                results.append(atom)
-        return results
+        with _Timer(self._telemetry, "spatial_query"):
+            hits = self.spatial_index.query_radius(center, radius, frame_id, limit=limit)
+            ids = [mid for mid, _ in hits]
+            atoms = self.get_atoms(ids)
+            results: List[MemoryAtom] = []
+            for (mid, dist), atom in zip(hits, atoms):
+                if atom is not None:
+                    atom.embodied_meta["_spatial_distance"] = dist
+                    results.append(atom)
+            return results
 
     def search_temporal(
         self,
@@ -453,12 +462,13 @@ class EmbodiedMemory:
         limit: int = 30,
     ) -> List[MemoryAtom]:
         """纯时间区间查询（默认任意重叠）"""
-        if relation is None:
-            hits = self.temporal_index.query_overlapping(interval, frame_id, limit=limit)
-        else:
-            hits = self.temporal_index.query(interval, relation, frame_id, limit=limit)
-        ids = [mid for mid, _ in hits]
-        return [a for a in self.get_atoms(ids) if a is not None]
+        with _Timer(self._telemetry, "temporal_query"):
+            if relation is None:
+                hits = self.temporal_index.query_overlapping(interval, frame_id, limit=limit)
+            else:
+                hits = self.temporal_index.query(interval, relation, frame_id, limit=limit)
+            ids = [mid for mid, _ in hits]
+            return [a for a in self.get_atoms(ids) if a is not None]
 
     # ========================================================================
     # 传感器接入
@@ -915,9 +925,14 @@ class EmbodiedMemory:
         cached = self._scene_graph_cache.get(scene_id)
         if cached is not None:
             self._scene_graph_cache.move_to_end(scene_id)
+            if self._telemetry:
+                self._telemetry.record_cache_hit("scene_graph")
             return cached
-        sg = SceneGraph(scene_id, self.world_object_store)
-        sg.build()
+        if self._telemetry:
+            self._telemetry.record_cache_miss("scene_graph")
+        with _Timer(self._telemetry, "scene_graph_build"):
+            sg = SceneGraph(scene_id, self.world_object_store)
+            sg.build()
         self._scene_graph_cache[scene_id] = sg
         if len(self._scene_graph_cache) > self._MAX_SCENE_GRAPH_CACHE:
             self._scene_graph_cache.popitem(last=False)
@@ -1088,6 +1103,22 @@ class EmbodiedMemory:
         if not query_waypoints:
             return []
 
+        _t = _Timer(self._telemetry, "trajectory_query")
+        _t.__enter__()
+        try:
+            return self._search_similar_trajectories_impl(
+                query_waypoints, spatial_center, spatial_radius,
+                temporal_interval, top_k, max_dtw_distance,
+            )
+        finally:
+            _t.__exit__(None, None, None)
+
+    def _search_similar_trajectories_impl(
+        self,
+        query_waypoints,
+        spatial_center, spatial_radius,
+        temporal_interval, top_k, max_dtw_distance,
+    ) -> List[Tuple[MemoryAtom, float]]:
         query_positions = [wp[0] for wp in query_waypoints]
         query_sig = trajectory_feature_signature(query_waypoints)
 
@@ -1502,8 +1533,33 @@ class EmbodiedMemory:
             DaemonStats 字典，或 None（守护线程未启动）
         """
         if hasattr(self, "_daemon") and self._daemon is not None:
-            return self._daemon.stats.__dict__
+            stats = self._daemon.stats.__dict__
+            # 同步到 telemetry（若启用）
+            if self._telemetry is not None:
+                self._telemetry.update_daemon_snapshot(stats)
+            return stats
         return None
+
+    def get_telemetry(self) -> Optional[Dict[str, Any]]:
+        """获取运行时遥测数据快照
+
+        Returns:
+            包含缓存命中率、查询延迟、守护线程统计的 dict，或 None（未启用遥测）
+        """
+        if self._telemetry is None:
+            return None
+        # 在读取前同步守护线程统计
+        if hasattr(self, "_daemon") and self._daemon is not None:
+            self._telemetry.update_daemon_snapshot(self._daemon.stats.__dict__)
+        return self._telemetry.snapshot()
+
+    def prometheus_metrics(self) -> str:
+        """导出 Prometheus 格式的遥测指标"""
+        if self._telemetry is None:
+            return ""
+        if hasattr(self, "_daemon") and self._daemon is not None:
+            self._telemetry.update_daemon_snapshot(self._daemon.stats.__dict__)
+        return self._telemetry.prometheus_metrics()
 
     # ========================================================================
     # 向后兼容代理

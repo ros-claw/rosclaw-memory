@@ -25,8 +25,9 @@ class WorldObjectStore:
     操作 embodied_world_objects 与 embodied_spatial_relations 表。
     """
 
-    def __init__(self, db_conn: Any):
+    def __init__(self, db_conn: Any, telemetry: Optional[Any] = None):
         self.db_conn = db_conn
+        self._telemetry = telemetry
         # 事务深度（>0 时抑制中间 commit，与 EmbodiedMemory.transaction() 协同）
         self._transaction_depth = 0
         # 读取缓存：避免重复反序列化高频访问的世界对象（OrderedDict 实现真 LRU）
@@ -199,7 +200,11 @@ class WorldObjectStore:
         cached = self._object_cache.get(obj_id)
         if cached is not None:
             self._object_cache.move_to_end(obj_id)
+            if self._telemetry is not None:
+                self._telemetry.record_cache_hit("world_object")
             return cached
+        if self._telemetry is not None:
+            self._telemetry.record_cache_miss("world_object")
         cursor = self.db_conn.cursor()
         cursor.execute(
             "SELECT obj_id, obj_type, name, pos_x, pos_y, pos_z, "
