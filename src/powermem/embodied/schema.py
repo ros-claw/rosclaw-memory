@@ -353,6 +353,19 @@ def initialize_embodied_schema(conn, target_version: int = CURRENT_SCHEMA_VERSIO
     # 自动检测方言
     dialect = _detect_dialect(conn)
 
+    # SQLite 文件型数据库启用 WAL 模式，提升写入并发和吞吐
+    if dialect == "sqlite":
+        try:
+            db_list = conn.execute("PRAGMA database_list").fetchall()
+            # db_list: [(seq, name, file), ...]；file 为空字符串表示 :memory:
+            for _seq, _name, db_file in db_list:
+                if db_file and db_file != ":memory:":
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    logger.debug("SQLite WAL mode enabled for %s", db_file)
+                    break
+        except Exception:
+            pass
+
     ddl_list, idx_list = get_dialect_ddl(dialect)
     cursor = conn.cursor()
 

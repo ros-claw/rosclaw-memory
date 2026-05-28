@@ -26,6 +26,8 @@ class WorldObjectStore:
 
     def __init__(self, db_conn: Any):
         self.db_conn = db_conn
+        # 事务深度（>0 时抑制中间 commit，与 EmbodiedMemory.transaction() 协同）
+        self._transaction_depth = 0
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -173,7 +175,8 @@ class WorldObjectStore:
                 last_seen_sec = excluded.last_seen_sec
         """
         cursor.execute(sql, self._world_object_to_row(obj))
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         logger.debug("Saved world object %s (%s)", obj.obj_id, obj.name)
         return obj.obj_id
 
@@ -317,7 +320,8 @@ class WorldObjectStore:
                     obj_id,
                 ),
             )
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         return cursor.rowcount > 0
 
     def update_state(self, obj_id: str, state: str) -> bool:
@@ -327,7 +331,8 @@ class WorldObjectStore:
             "UPDATE embodied_world_objects SET state = ? WHERE obj_id = ?",
             (state, obj_id),
         )
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         return cursor.rowcount > 0
 
     def update_occlusion(
@@ -345,14 +350,16 @@ class WorldObjectStore:
             "WHERE obj_id = ?",
             (occlusion_status, confidence, last_seen_sec, obj_id),
         )
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         return cursor.rowcount > 0
 
     def delete(self, obj_id: str) -> bool:
         """删除对象（级联删除其空间关系）"""
         cursor = self.db_conn.cursor()
         cursor.execute("DELETE FROM embodied_world_objects WHERE obj_id = ?", (obj_id,))
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         return cursor.rowcount > 0
 
     # -----------------------------------------------------------------------
@@ -367,7 +374,8 @@ class WorldObjectStore:
             "VALUES (?, ?, ?, ?)",
             (relation.subject_id, relation.object_id, relation.relation, relation.confidence),
         )
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         return cursor.lastrowid
 
     def get_relations(
@@ -440,5 +448,6 @@ class WorldObjectStore:
             "DELETE FROM embodied_spatial_relations WHERE subject_id = ? OR object_id = ?",
             (obj_id, obj_id),
         )
-        self.db_conn.commit()
+        if self._transaction_depth == 0:
+            self.db_conn.commit()
         return cursor.rowcount

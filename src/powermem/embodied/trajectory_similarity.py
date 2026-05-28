@@ -25,6 +25,7 @@ def dtw_distance(
     traj_a: List[Vec3],
     traj_b: List[Vec3],
     bandwidth: Optional[int] = None,
+    max_distance: Optional[float] = None,
 ) -> float:
     """Dynamic Time Warping distance between two 3D trajectories.
 
@@ -32,6 +33,7 @@ def dtw_distance(
         traj_a: List of Vec3 positions (length N)
         traj_b: List of Vec3 positions (length M)
         bandwidth: Sakoe-Chiba band width (max |i-j| allowed). None = unrestricted.
+        max_distance: 若当前行最小值超过此阈值则提前返回 inf，避免无意义的完整计算。
 
     Returns:
         Scalar DTW distance (sum of Euclidean costs along optimal warping path)
@@ -49,6 +51,7 @@ def dtw_distance(
 
     for i in range(n):
         left = float("inf")
+        row_min = float("inf")
         for j in range(m):
             # Sakoe-Chiba band constraint
             if bandwidth is not None and abs(i - j) > bandwidth:
@@ -65,6 +68,12 @@ def dtw_distance(
             else:
                 curr[j] = cost + min(prev[j], left, prev[j - 1])
             left = curr[j]
+            if curr[j] < row_min:
+                row_min = curr[j]
+
+        # Early termination: 若当前行所有路径成本均已超过阈值，后续不可能更优
+        if max_distance is not None and row_min > max_distance:
+            return float("inf")
         prev, curr = curr, prev
 
     return prev[m - 1]
@@ -74,13 +83,15 @@ def dtw_distance_normalized(
     traj_a: List[Vec3],
     traj_b: List[Vec3],
     bandwidth: Optional[int] = None,
+    max_distance: Optional[float] = None,
 ) -> float:
     """Normalized DTW distance = raw DTW / max(len_a, len_b).
 
     Makes scores comparable across different-length trajectories.
     """
-    raw = dtw_distance(traj_a, traj_b, bandwidth=bandwidth)
     denom = max(len(traj_a), len(traj_b), 1)
+    raw_max = max_distance * denom if max_distance is not None else None
+    raw = dtw_distance(traj_a, traj_b, bandwidth=bandwidth, max_distance=raw_max)
     return raw / denom
 
 

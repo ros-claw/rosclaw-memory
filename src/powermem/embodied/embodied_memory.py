@@ -15,7 +15,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any, Dict, List, Optional, Set, Tuple
+from contextlib import contextmanager
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from powermem.core.memory import Memory
 
@@ -85,8 +86,46 @@ class EmbodiedMemory:
         # Tri-Route 认知检索路由器
         self._router = CognitiveRouter(self)
 
+        # 事务深度（>0 时抑制中间 commit，用于批量操作）
+        self._transaction_depth = 0
+
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
+
+    # ========================================================================
+    # 事务与批量操作
+    # ========================================================================
+
+    @contextmanager
+    def transaction(self) -> Generator[None, None, None]:
+        """事务上下文管理器 —— 批量操作时抑制中间 commit
+
+        用法：
+            with em.transaction():
+                for atom in atoms:
+                    em.add_atom(atom)
+        """
+        self._transaction_depth += 1
+        self.world_object_store._transaction_depth += 1
+        try:
+            yield
+        finally:
+            self._transaction_depth -= 1
+            self.world_object_store._transaction_depth -= 1
+            if self._transaction_depth == 0:
+                try:
+                    self.db_conn.commit()
+                except Exception as e:
+                    logger.warning("Batch commit failed: %s", e)
+                    raise
+
+    def batch_add_atoms(self, atoms: List[MemoryAtom]) -> List[int]:
+        """批量写入 MemoryAtom（单事务）"""
+        memory_ids: List[int] = []
+        with self.transaction():
+            for atom in atoms:
+                memory_ids.append(self.add_atom(atom))
+        return memory_ids
 
     # ========================================================================
     # 写入接口
@@ -189,7 +228,8 @@ class EmbodiedMemory:
         params = self._atom_to_sql_params(atom)
         try:
             cursor.execute(sql, params)
-            self.db_conn.commit()
+            if self._transaction_depth == 0:
+                self.db_conn.commit()
         except Exception as e:
             logger.warning("Failed to insert embodied record for id=%s: %s", atom.memory_id, e)
 
@@ -1008,7 +1048,9 @@ class EmbodiedMemory:
             if not cand_waypoints:
                 continue
             cand_positions = [wp[0] for wp in cand_waypoints]
-            dtw = dtw_distance_normalized(query_positions, cand_positions)
+            dtw = dtw_distance_normalized(
+                query_positions, cand_positions, max_distance=max_dtw_distance
+            )
 
             if max_dtw_distance is not None and dtw > max_dtw_distance:
                 continue
