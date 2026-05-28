@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 from .types import Vec3
 
 
@@ -21,13 +23,37 @@ def _extract_positions(
     return [wp[0] for wp in waypoints]
 
 
+def _positions_to_array(positions: List[Vec3]) -> "np.ndarray":
+    """Convert list of Vec3 to (N, 3) float64 numpy array."""
+    arr = np.empty((len(positions), 3), dtype=np.float64)
+    for i, p in enumerate(positions):
+        arr[i, 0] = p.x
+        arr[i, 1] = p.y
+        arr[i, 2] = p.z
+    return arr
+
+
+def _euclidean_cost_matrix(a: "np.ndarray", b: "np.ndarray") -> "np.ndarray":
+    """Vectorized pairwise Euclidean distance matrix.
+
+    Args:
+        a: (N, 3) array
+        b: (M, 3) array
+
+    Returns:
+        (N, M) array of distances
+    """
+    # (N, 1, 3) - (1, M, 3) -> (N, M, 3) -> sqrt(sum) -> (N, M)
+    return np.sqrt(np.sum((a[:, None, :] - b[None, :, :]) ** 2, axis=2))
+
+
 def dtw_distance(
     traj_a: List[Vec3],
     traj_b: List[Vec3],
     bandwidth: Optional[int] = None,
     max_distance: Optional[float] = None,
 ) -> float:
-    """Dynamic Time Warping distance between two 3D trajectories.
+    """Dynamic Time Warping distance between two 3D trajectories (numpy-accelerated).
 
     Args:
         traj_a: List of Vec3 positions (length N)
@@ -45,6 +71,16 @@ def dtw_distance(
     if n == 1 and m == 1:
         return traj_a[0].distance_to(traj_b[0])
 
+    # For very small trajectories, pure-Python distance_to is faster than numpy overhead.
+    # Threshold determined empirically: numpy wins when n*m >= ~150.
+    use_numpy = n * m >= 200
+    if use_numpy:
+        a_arr = _positions_to_array(traj_a)
+        b_arr = _positions_to_array(traj_b)
+        cost_matrix = _euclidean_cost_matrix(a_arr, b_arr)
+    else:
+        cost_matrix = None
+
     # Use two rows for O(min(N,M)) memory
     prev = [float("inf")] * m
     curr = [float("inf")] * m
@@ -52,13 +88,17 @@ def dtw_distance(
     for i in range(n):
         left = float("inf")
         row_min = float("inf")
+        row_costs = cost_matrix[i] if cost_matrix is not None else None
         for j in range(m):
             # Sakoe-Chiba band constraint
             if bandwidth is not None and abs(i - j) > bandwidth:
                 curr[j] = float("inf")
                 continue
 
-            cost = traj_a[i].distance_to(traj_b[j])
+            if row_costs is not None:
+                cost = float(row_costs[j])
+            else:
+                cost = traj_a[i].distance_to(traj_b[j])
             if i == 0 and j == 0:
                 curr[j] = cost
             elif i == 0:
