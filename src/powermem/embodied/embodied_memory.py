@@ -93,6 +93,9 @@ class EmbodiedMemory:
         self._atom_cache: Dict[int, MemoryAtom] = {}
         self._MAX_ATOM_CACHE = 512
 
+        # 场景图缓存：按 scene_id 缓存已构建的 SceneGraph（世界对象变更时失效）
+        self._scene_graph_cache: Dict[str, SceneGraph] = {}
+
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
 
@@ -322,6 +325,12 @@ class EmbodiedMemory:
 
     def _invalidate_atom_cache(self, memory_id: int) -> None:
         self._atom_cache.pop(memory_id, None)
+
+    def _invalidate_scene_graph_cache(self, scene_id: Optional[str] = None) -> None:
+        if scene_id is None:
+            self._scene_graph_cache.clear()
+        else:
+            self._scene_graph_cache.pop(scene_id, None)
 
     def get_atoms(self, memory_ids: List[int]) -> List[Optional[MemoryAtom]]:
         """批量读取记忆并还原为 MemoryAtom（带 LRU 缓存）
@@ -700,6 +709,7 @@ class EmbodiedMemory:
             last_seen_sec=obj.last_seen_sec,
         )
         self.world_object_store.save(obj)
+        self._invalidate_scene_graph_cache(obj.scene_id)
         return obj.obj_id
 
     def add_world_objects(self, parse_result: "ParseResult") -> List[str]:
@@ -772,11 +782,13 @@ class EmbodiedMemory:
         obj = self.world_object_store.load(obj_id)
         if obj is None:
             return False
+        scene_id = obj.scene_id
 
         # 更新 store
         ok = self.world_object_store.update_pose(obj_id, pose, state)
         if not ok:
             return False
+        self._invalidate_scene_graph_cache(scene_id)
 
         # 记录变化事件
         content = f"Object {obj.name} moved to ({pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f})"
@@ -823,12 +835,15 @@ class EmbodiedMemory:
             decay_rate=0.05,
             missing_threshold=0.2,
         )
-        return tracker.sync_detections(
+        report = tracker.sync_detections(
             scene_id=scene_id,
             detections=detections,
             timestamp_sec=timestamp_sec,
             occlusion_radius=occlusion_radius,
         )
+        # 对象状态可能发生变化，失效场景图缓存
+        self._invalidate_scene_graph_cache(scene_id)
+        return report
 
     def search_world_objects(
         self,
@@ -884,9 +899,13 @@ class EmbodiedMemory:
         return [o for o, _ in results[:limit]]
 
     def get_scene_graph(self, scene_id: str) -> SceneGraph:
-        """获取场景图"""
+        """获取场景图（带增量缓存）"""
+        cached = self._scene_graph_cache.get(scene_id)
+        if cached is not None:
+            return cached
         sg = SceneGraph(scene_id, self.world_object_store)
         sg.build()
+        self._scene_graph_cache[scene_id] = sg
         return sg
 
     def auto_compute_relations(
@@ -895,10 +914,13 @@ class EmbodiedMemory:
         spatial_tolerance: float = 0.01,
     ) -> List[SpatialRelation]:
         """自动计算场景内的空间关系"""
+        self._invalidate_scene_graph_cache(scene_id)
         sg = self.get_scene_graph(scene_id)
         relations = sg.compute_relations(spatial_tolerance)
         for rel in relations:
             self.world_object_store.add_relation(rel)
+        # 关系写入 store 后，当前缓存的 graph 缺少新关系，需要失效
+        self._invalidate_scene_graph_cache(scene_id)
         return relations
 
     # ========================================================================

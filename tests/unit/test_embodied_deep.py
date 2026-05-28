@@ -2219,3 +2219,65 @@ class TestTrajectoryPositionCache:
         atom, dtw = results[0]
         assert atom._trajectory_positions is not None
         assert dtw < 0.5
+
+
+class TestSceneGraphCache:
+    """场景图增量缓存测试"""
+
+    def test_get_scene_graph_caches_result(self, embodied_memory):
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="sg_room", obj_type="room", scene_id="sg_cache",
+        ))
+        sg1 = embodied_memory.get_scene_graph("sg_cache")
+        sg2 = embodied_memory.get_scene_graph("sg_cache")
+        assert sg1 is sg2  # 同一缓存实例
+
+    def test_add_world_object_invalidates_cache(self, embodied_memory):
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="sg_table", obj_type="table", scene_id="sg_inv",
+        ))
+        sg1 = embodied_memory.get_scene_graph("sg_inv")
+        assert "sg_table" in {o.obj_id for o in sg1.get_objects()}
+
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="sg_chair", obj_type="chair", scene_id="sg_inv",
+        ))
+        sg2 = embodied_memory.get_scene_graph("sg_inv")
+        assert sg1 is not sg2
+        ids = {o.obj_id for o in sg2.get_objects()}
+        assert "sg_chair" in ids
+
+    def test_update_pose_invalidates_cache(self, embodied_memory):
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="sg_movable", obj_type="box",
+            pose=Pose(position=Vec3(0, 0, 0)), scene_id="sg_move",
+        ))
+        sg1 = embodied_memory.get_scene_graph("sg_move")
+        embodied_memory.update_world_object_pose(
+            "sg_movable", Pose(position=Vec3(1, 1, 1))
+        )
+        sg2 = embodied_memory.get_scene_graph("sg_move")
+        assert sg1 is not sg2
+        obj = sg2.get_object("sg_movable")
+        assert obj.pose.position == Vec3(1, 1, 1)
+
+    def test_auto_compute_relations_invalidates_cache(self, embodied_memory):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="sg_a", obj_type="box",
+            pose=Pose(position=Vec3(0, 0, 0)), size=(1, 1, 1),
+            scene_id="sg_rel",
+        ))
+        embodied_memory.add_world_object(WorldObject(
+            obj_id="sg_b", obj_type="box",
+            pose=Pose(position=Vec3(0, 0, 0.6)), size=(0.1, 0.1, 0.1),
+            scene_id="sg_rel",
+        ))
+        sg1 = embodied_memory.get_scene_graph("sg_rel")
+        # 计算关系并写入 store
+        relations = embodied_memory.auto_compute_relations("sg_rel", spatial_tolerance=0.05)
+        assert len(relations) > 0
+        # 缓存应已失效，重新获取应包含新关系
+        sg2 = embodied_memory.get_scene_graph("sg_rel")
+        assert sg1 is not sg2
