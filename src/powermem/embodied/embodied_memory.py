@@ -101,6 +101,9 @@ class EmbodiedMemory:
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
 
+        # 后台维护守护线程
+        self._daemon: Optional[Any] = None
+
     # ========================================================================
     # 事务与批量操作
     # ========================================================================
@@ -1447,6 +1450,60 @@ class EmbodiedMemory:
             "pipeline": self._pipeline.get_stats() if self._pipeline else None,
             "plugin": self._plugin.get_surprisal_state() if self._plugin else None,
         }
+
+    # ========================================================================
+    # 后台维护守护线程
+    # ========================================================================
+
+    def start_background_daemon(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """启动后台维护守护线程
+
+        守护线程周期性执行：
+        - vacuum_indexes(): 重建空间索引
+        - forget_old_memories(): 遗忘过期记忆
+        - object_permanence_decay(): 衰减被遮挡对象置信度
+        - cache_cleanup(): 清理无效缓存
+
+        Args:
+            config: DaemonConfig 参数字典（可选）
+                enabled: 总开关（默认 True）
+                vacuum_interval_sec: vacuum 间隔（默认 3600）
+                forget_interval_sec: 遗忘间隔（默认 86400）
+                decay_interval_sec: 衰减间隔（默认 60）
+                cache_cleanup_interval_sec: 缓存清理间隔（默认 600）
+        """
+        from .background_daemon import BackgroundDaemon, DaemonConfig
+
+        if hasattr(self, "_daemon") and self._daemon is not None:
+            logger.warning("Background daemon already running")
+            return
+
+        cfg = DaemonConfig(**(config or {}))
+        self._daemon = BackgroundDaemon(self, cfg)
+        self._daemon.start()
+
+    def stop_background_daemon(self, timeout: float = 5.0) -> None:
+        """停止后台维护守护线程
+
+        Args:
+            timeout: 等待线程退出的最大秒数
+        """
+        if hasattr(self, "_daemon") and self._daemon is not None:
+            self._daemon.stop(timeout=timeout)
+            self._daemon = None
+
+    def get_daemon_stats(self) -> Optional[Dict[str, Any]]:
+        """获取守护线程运行统计
+
+        Returns:
+            DaemonStats 字典，或 None（守护线程未启动）
+        """
+        if hasattr(self, "_daemon") and self._daemon is not None:
+            return self._daemon.stats.__dict__
+        return None
 
     # ========================================================================
     # 向后兼容代理

@@ -30,6 +30,7 @@ from .types import (
     UncertaintyEstimate,
     UncertaintyType,
     Vec3,
+    WorldObject,
 )
 
 # 核心数据模型
@@ -102,6 +103,9 @@ from .collision import (
 # Schema
 from .schema import initialize_embodied_schema
 
+# 后台维护
+from .background_daemon import BackgroundDaemon, DaemonConfig, DaemonStats
+
 __all__ = [
     # types
     "AffectiveTag",
@@ -116,6 +120,7 @@ __all__ = [
     "UncertaintyEstimate",
     "UncertaintyType",
     "Vec3",
+    "WorldObject",
     # core
     "MemoryAtom",
     # spatial / temporal
@@ -168,4 +173,8 @@ __all__ = [
     "build_collision_bodies",
     # schema
     "initialize_embodied_schema",
+    # background daemon
+    "BackgroundDaemon",
+    "DaemonConfig",
+    "DaemonStats",
 ]
