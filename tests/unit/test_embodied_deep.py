@@ -2281,3 +2281,88 @@ class TestSceneGraphCache:
         # 缓存应已失效，重新获取应包含新关系
         sg2 = embodied_memory.get_scene_graph("sg_rel")
         assert sg1 is not sg2
+
+
+class TestCacheAndForgetting:
+    """缓存 LRU 与遗忘策略测试"""
+
+    def test_atom_cache_lru_eviction(self, embodied_memory):
+        embodied_memory._MAX_ATOM_CACHE = 4
+        embodied_memory._atom_cache.clear()
+
+        mids = []
+        for i in range(6):
+            mid = embodied_memory.add_atom(MemoryAtom(content=f"lru_{i}"))
+            mids.append(mid)
+
+        # 访问第 0 和第 1 号，使其变热
+        embodied_memory.get_atom(mids[0])
+        embodied_memory.get_atom(mids[1])
+
+        # 此时缓存应有 6 条，但上限 4，应触发驱逐
+        assert len(embodied_memory._atom_cache) <= 4
+        # 被访问的 0 和 1 应仍在缓存中
+        assert mids[0] in embodied_memory._atom_cache
+        assert mids[1] in embodied_memory._atom_cache
+
+    def test_scene_graph_cache_lru_eviction(self, embodied_memory):
+        embodied_memory._MAX_SCENE_GRAPH_CACHE = 2
+        embodied_memory._scene_graph_cache.clear()
+
+        for i in range(4):
+            embodied_memory.add_world_object(WorldObject(
+                obj_id=f"sg_{i}", obj_type="box", scene_id=f"scene_{i}",
+            ))
+            embodied_memory.get_scene_graph(f"scene_{i}")
+
+        assert len(embodied_memory._scene_graph_cache) <= 2
+        # 最近访问的应在缓存中
+        assert "scene_3" in embodied_memory._scene_graph_cache
+        assert "scene_2" in embodied_memory._scene_graph_cache
+
+    def test_forget_old_memories_dry_run(self, embodied_memory):
+        for i in range(5):
+            atom = MemoryAtom(content=f"old_{i}", embodied_meta={"physical_type": "snapshot"})
+            mid = embodied_memory.add_atom(atom)
+            # 强制更新为旧时间
+            cursor = embodied_memory.db_conn.cursor()
+            cursor.execute(
+                "UPDATE embodied_memories SET updated_at = '2000-01-01T00:00:00' WHERE memory_id = ?",
+                (mid,),
+            )
+        embodied_memory.db_conn.commit()
+
+        report = embodied_memory.forget_old_memories(max_age_days=1, dry_run=True)
+        assert report["deleted"] == 5
+        assert report["skipped_salient"] == 0
+
+    def test_forget_old_memories_preserves_salient(self, embodied_memory):
+        from powermem.embodied.types import AffectiveTag
+
+        # 高显著性记忆不应被删除
+        atom = MemoryAtom(
+            content="important",
+            affective=AffectiveTag(salience=0.95, valence=0.5, arousal=0.5),
+            embodied_meta={"physical_type": "snapshot"},
+        )
+        mid = embodied_memory.add_atom(atom)
+        cursor = embodied_memory.db_conn.cursor()
+        cursor.execute(
+            "UPDATE embodied_memories SET updated_at = '2000-01-01T00:00:00' WHERE memory_id = ?",
+            (mid,),
+        )
+        embodied_memory.db_conn.commit()
+
+        report = embodied_memory.forget_old_memories(max_age_days=1, min_salience=0.9, dry_run=True)
+        assert report["skipped_salient"] == 1
+        assert report["deleted"] == 0
+
+    def test_vacuum_indexes_clears_caches(self, embodied_memory):
+        mid = embodied_memory.add_atom(MemoryAtom(content="vacuum_me"))
+        embodied_memory.get_atom(mid)
+        assert len(embodied_memory._atom_cache) > 0
+
+        stats = embodied_memory.vacuum_indexes()
+        assert len(embodied_memory._atom_cache) == 0
+        assert len(embodied_memory._scene_graph_cache) == 0
+        assert "spatial" in stats

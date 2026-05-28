@@ -15,6 +15,7 @@ from __future__ import annotations
 from ._json import fast_dumps
 import logging
 import math
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
@@ -89,12 +90,13 @@ class EmbodiedMemory:
         # 事务深度（>0 时抑制中间 commit，用于批量操作）
         self._transaction_depth = 0
 
-        # 读取缓存：避免重复反序列化高频访问的记忆
-        self._atom_cache: Dict[int, MemoryAtom] = {}
+        # 读取缓存：避免重复反序列化高频访问的记忆（OrderedDict 实现真 LRU）
+        self._atom_cache: OrderedDict[int, MemoryAtom] = OrderedDict()
         self._MAX_ATOM_CACHE = 512
 
         # 场景图缓存：按 scene_id 缓存已构建的 SceneGraph（世界对象变更时失效）
-        self._scene_graph_cache: Dict[str, SceneGraph] = {}
+        self._scene_graph_cache: OrderedDict[str, SceneGraph] = OrderedDict()
+        self._MAX_SCENE_GRAPH_CACHE = 16
 
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
@@ -211,6 +213,11 @@ class EmbodiedMemory:
 
         # 6. 缓存更新/失效
         self._atom_cache[memory_id] = atom
+        self._atom_cache.move_to_end(memory_id)
+        if len(self._atom_cache) > self._MAX_ATOM_CACHE:
+            to_evict = len(self._atom_cache) - self._MAX_ATOM_CACHE + self._MAX_ATOM_CACHE // 4
+            for _ in range(to_evict):
+                self._atom_cache.popitem(last=False)
 
         logger.debug("Added MemoryAtom id=%s spatial=%s", memory_id, atom.spatial)
         return memory_id
@@ -301,6 +308,7 @@ class EmbodiedMemory:
         """读取记忆并还原为 MemoryAtom（带 LRU 缓存）"""
         cached = self._atom_cache.get(memory_id)
         if cached is not None:
+            self._atom_cache.move_to_end(memory_id)
             return cached
         raw = self.memory.storage.get_memory(memory_id)
         if raw is None:
@@ -317,10 +325,10 @@ class EmbodiedMemory:
         )
         self._atom_cache[memory_id] = atom
         if len(self._atom_cache) > self._MAX_ATOM_CACHE:
-            # 简单驱逐：删除最旧的 1/4 条目
-            to_evict = list(self._atom_cache.keys())[: self._MAX_ATOM_CACHE // 4]
-            for k in to_evict:
-                del self._atom_cache[k]
+            # LRU 驱逐：删除最旧的 1/4 条目
+            to_evict = len(self._atom_cache) - self._MAX_ATOM_CACHE + self._MAX_ATOM_CACHE // 4
+            for _ in range(to_evict):
+                self._atom_cache.popitem(last=False)
         return atom
 
     def _invalidate_atom_cache(self, memory_id: int) -> None:
@@ -349,6 +357,7 @@ class EmbodiedMemory:
         for mid in memory_ids:
             atom = self._atom_cache.get(mid)
             if atom is not None:
+                self._atom_cache.move_to_end(mid)
                 cached[mid] = atom
             else:
                 missing.append(mid)
@@ -379,9 +388,9 @@ class EmbodiedMemory:
 
         # 3. 统一缓存驱逐（避免多次小驱逐）
         if len(self._atom_cache) > self._MAX_ATOM_CACHE:
-            to_evict = list(self._atom_cache.keys())[: self._MAX_ATOM_CACHE // 4]
-            for k in to_evict:
-                del self._atom_cache[k]
+            to_evict = len(self._atom_cache) - self._MAX_ATOM_CACHE + self._MAX_ATOM_CACHE // 4
+            for _ in range(to_evict):
+                self._atom_cache.popitem(last=False)
 
         # 4. 按输入顺序返回
         return [cached.get(mid) for mid in memory_ids]
@@ -902,10 +911,13 @@ class EmbodiedMemory:
         """获取场景图（带增量缓存）"""
         cached = self._scene_graph_cache.get(scene_id)
         if cached is not None:
+            self._scene_graph_cache.move_to_end(scene_id)
             return cached
         sg = SceneGraph(scene_id, self.world_object_store)
         sg.build()
         self._scene_graph_cache[scene_id] = sg
+        if len(self._scene_graph_cache) > self._MAX_SCENE_GRAPH_CACHE:
+            self._scene_graph_cache.popitem(last=False)
         return sg
 
     def auto_compute_relations(
@@ -1340,6 +1352,93 @@ class EmbodiedMemory:
         except Exception as e:
             logger.warning("Failed to delete memory %s: %s", memory_id, e)
             return False
+
+    def forget_old_memories(
+        self,
+        max_age_days: float = 30.0,
+        min_salience: float = 0.0,
+        physical_types: Optional[Tuple[str, ...]] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, int]:
+        """遗忘策略：删除过期、低显著性的记忆
+
+        策略：
+        1. 查询 embodied_memories 表中超过 max_age_days 的记录
+        2. 保留 salience > min_salience 或 prediction_error > 1.0 的记忆
+        3. 可选仅删除指定 physical_type（如 'snapshot'）
+        4. 同步清理空间/时间索引和缓存
+
+        Args:
+            max_age_days: 最大保留天数
+            min_salience: 最低显著性阈值（低于此值可删除）
+            physical_types: 仅删除这些类型的记忆（None=所有类型）
+            dry_run: 只统计不实际删除
+
+        Returns:
+            {"deleted": int, "skipped_salient": int, "skipped_recent": int}
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cutoff_str = cutoff.isoformat()
+
+        cursor = self.db_conn.cursor()
+        where_clauses = ["updated_at < ? OR (updated_at IS NULL AND created_at < ?)"]
+        params = [cutoff_str, cutoff_str]
+        if physical_types:
+            placeholders = ",".join("?" * len(physical_types))
+            where_clauses.append(f"physical_type IN ({placeholders})")
+            params.extend(physical_types)
+
+        sql = f"""
+            SELECT memory_id, salience, prediction_error, physical_type
+            FROM embodied_memories
+            WHERE {" AND ".join(where_clauses)}
+        """
+        cursor.execute(sql, params)
+
+        to_delete: List[int] = []
+        skipped_salient = 0
+        skipped_recent = 0
+
+        for row in cursor.fetchall():
+            mid, salience, pe, ptype = row
+            salience = float(salience or 0.0)
+            pe = float(pe or 0.0)
+            # 保留高显著性或高预测误差的记忆
+            if salience > min_salience or abs(pe) > 1.0:
+                skipped_salient += 1
+                continue
+            to_delete.append(int(mid))
+
+        if not dry_run:
+            for mid in to_delete:
+                self.delete_atom(mid)
+
+        return {
+            "deleted": len(to_delete),
+            "skipped_salient": skipped_salient,
+            "skipped_recent": skipped_recent,
+        }
+
+    def vacuum_indexes(self) -> Dict[str, Any]:
+        """重建空间索引并清理缓存，释放被删除条目占用的内存
+
+        在大量 delete_atom 或 forget_old_memories 后调用，
+        确保 voxel hash 不残留死条目，缓存不保留已删对象。
+        """
+        self.spatial_index.rebuild_from_db()
+        self._atom_cache.clear()
+        self._scene_graph_cache.clear()
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM embodied_memories WHERE temporal_start IS NOT NULL"
+        )
+        temporal_count = cursor.fetchone()[0]
+        return {
+            "spatial": self.spatial_index.stats(),
+            "temporal_count": temporal_count,
+        }
 
     def stats(self) -> Dict[str, Any]:
         """获取具身记忆系统统计"""
