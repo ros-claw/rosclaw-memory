@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from ._json import fast_dumps, fast_loads
@@ -28,8 +29,8 @@ class WorldObjectStore:
         self.db_conn = db_conn
         # 事务深度（>0 时抑制中间 commit，与 EmbodiedMemory.transaction() 协同）
         self._transaction_depth = 0
-        # 读取缓存：避免重复反序列化高频访问的世界对象
-        self._object_cache: Dict[str, WorldObject] = {}
+        # 读取缓存：避免重复反序列化高频访问的世界对象（OrderedDict 实现真 LRU）
+        self._object_cache: OrderedDict[str, WorldObject] = OrderedDict()
         self._MAX_OBJECT_CACHE = 512
 
     # -----------------------------------------------------------------------
@@ -186,10 +187,9 @@ class WorldObjectStore:
 
     def _cache_object(self, obj: WorldObject) -> None:
         self._object_cache[obj.obj_id] = obj
-        if len(self._object_cache) > self._MAX_OBJECT_CACHE:
-            to_evict = list(self._object_cache.keys())[: self._MAX_OBJECT_CACHE // 4]
-            for k in to_evict:
-                del self._object_cache[k]
+        self._object_cache.move_to_end(obj.obj_id)
+        while len(self._object_cache) > self._MAX_OBJECT_CACHE:
+            self._object_cache.popitem(last=False)
 
     def _invalidate_object_cache(self, obj_id: str) -> None:
         self._object_cache.pop(obj_id, None)
@@ -198,6 +198,7 @@ class WorldObjectStore:
         """按 obj_id 读取 WorldObject（带 LRU 缓存）"""
         cached = self._object_cache.get(obj_id)
         if cached is not None:
+            self._object_cache.move_to_end(obj_id)
             return cached
         cursor = self.db_conn.cursor()
         cursor.execute(
