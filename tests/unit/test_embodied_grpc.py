@@ -437,6 +437,27 @@ class TestGrpcObjectPermanence:
         assert len(report["transitions"]) == 1
         assert "visible -> occluded" in report["transitions"][0]
 
+    def test_sync_scene_objects_stream(self, client):
+        from powermem.embodied.types import Pose, Vec3, WorldObject
+
+        # Add multiple objects
+        for i in range(5):
+            client.add_world_object(WorldObject(
+                obj_id=f"stream_obj_{i}", obj_type="box",
+                scene_id="stream_scene", pose=Pose(position=Vec3(i, 0, 0)),
+            ))
+
+        report = client.sync_scene_objects_stream(
+            scene_id="stream_scene",
+            detections=[],
+            timestamp_sec=1.0,
+        )
+        assert len(report["updated_objects"]) == 5
+        assert len(report["transitions"]) == 5
+        # All should be occluded
+        for obj in report["updated_objects"]:
+            assert obj.occlusion_status == "occluded"
+
 
 class TestGrpcCognitiveSearch:
     def test_cognitive_search_basic(self, client):

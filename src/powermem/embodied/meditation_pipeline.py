@@ -11,12 +11,13 @@ MeditationPipeline — 机器人离线记忆抽象管道
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+from ._json import fast_loads
 
 from .types import SpatialRelation, Vec3
 
@@ -266,7 +267,7 @@ class RelationCrystallizer:
         changed: set = set()
         for (meta_json,) in cursor.fetchall():
             try:
-                meta = json.loads(meta_json or "{}")
+                meta = fast_loads(meta_json or "{}")
                 oid = meta.get("world_object_id")
                 if oid:
                     changed.add(oid)
@@ -428,7 +429,7 @@ class PatternExtractor:
         if not meta_json:
             return None
         try:
-            meta = json.loads(meta_json)
+            meta = fast_loads(meta_json)
             return meta.get("outcome_status") or meta.get("world_object", {}).get("state")
         except Exception:
             return None

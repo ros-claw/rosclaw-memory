@@ -256,6 +256,33 @@ class EmbodiedMemoryClient:
             "transitions": list(resp.transitions),
         }
 
+    def sync_scene_objects_stream(
+        self,
+        scene_id: str,
+        detections: List[WorldObject],
+        timestamp_sec: float,
+        occlusion_radius: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Streaming variant: returns aggregated result from streamed chunks."""
+        from .servicer import _pb_world_object_to_py, _py_world_object_to_pb
+
+        pb_detections = [_py_world_object_to_pb(d) for d in detections]
+        req = embodied_memory_pb2.SyncSceneObjectsRequest(
+            scene_id=scene_id,
+            detections=pb_detections,
+            timestamp_sec=timestamp_sec,
+            occlusion_radius=occlusion_radius,
+        )
+        all_objects: List[WorldObject] = []
+        all_transitions: List[str] = []
+        for chunk in self.stub.SyncSceneObjectsStream(req):
+            all_objects.extend([_pb_world_object_to_py(o) for o in chunk.updated_objects_chunk])
+            all_transitions.extend(chunk.transitions_chunk)
+        return {
+            "updated_objects": all_objects,
+            "transitions": all_transitions,
+        }
+
     # -----------------------------------------------------------------------
     # Tri-Route Cognitive Search
     # -----------------------------------------------------------------------

@@ -12,7 +12,7 @@ EmbodiedMemory — ROSClaw-Memory 的核心封装类
 
 from __future__ import annotations
 
-import json
+from ._json import fast_dumps
 import logging
 import math
 from contextlib import contextmanager
@@ -88,6 +88,10 @@ class EmbodiedMemory:
 
         # 事务深度（>0 时抑制中间 commit，用于批量操作）
         self._transaction_depth = 0
+
+        # 读取缓存：避免重复反序列化高频访问的记忆
+        self._atom_cache: Dict[int, MemoryAtom] = {}
+        self._MAX_ATOM_CACHE = 512
 
         # 接入管线（延迟初始化，需要 memory_store 回调）
         self._pipeline: Optional[IngestPipeline] = None
@@ -202,6 +206,9 @@ class EmbodiedMemory:
         if atom.causal_parents:
             self._insert_causal_edges(memory_id, atom.causal_parents)
 
+        # 6. 缓存更新/失效
+        self._atom_cache[memory_id] = atom
+
         logger.debug("Added MemoryAtom id=%s spatial=%s", memory_id, atom.spatial)
         return memory_id
 
@@ -270,7 +277,7 @@ class EmbodiedMemory:
             affective.arousal if affective else None,
             atom.action.value,
             atom.prediction_error,
-            json.dumps(atom.embodied_meta) if atom.embodied_meta else "{}",
+            fast_dumps(atom.embodied_meta) if atom.embodied_meta else "{}",
         )
 
     def _insert_causal_edges(self, effect_id: int, cause_ids: List[int]) -> None:
@@ -288,11 +295,14 @@ class EmbodiedMemory:
     # ========================================================================
 
     def get_atom(self, memory_id: int) -> Optional[MemoryAtom]:
-        """读取记忆并还原为 MemoryAtom"""
+        """读取记忆并还原为 MemoryAtom（带 LRU 缓存）"""
+        cached = self._atom_cache.get(memory_id)
+        if cached is not None:
+            return cached
         raw = self.memory.storage.get_memory(memory_id)
         if raw is None:
             return None
-        return MemoryAtom.from_metadata(
+        atom = MemoryAtom.from_metadata(
             content=raw.get("data", raw.get("content", "")),
             metadata=raw.get("metadata", {}),
             memory_id=memory_id,
@@ -302,6 +312,16 @@ class EmbodiedMemory:
             created_at=raw.get("created_at"),
             updated_at=raw.get("updated_at"),
         )
+        self._atom_cache[memory_id] = atom
+        if len(self._atom_cache) > self._MAX_ATOM_CACHE:
+            # 简单驱逐：删除最旧的 1/4 条目
+            to_evict = list(self._atom_cache.keys())[: self._MAX_ATOM_CACHE // 4]
+            for k in to_evict:
+                del self._atom_cache[k]
+        return atom
+
+    def _invalidate_atom_cache(self, memory_id: int) -> None:
+        self._atom_cache.pop(memory_id, None)
 
     # ========================================================================
     # 检索接口
@@ -392,6 +412,14 @@ class EmbodiedMemory:
     def ingest(self, frame: SensorFrame, content: Optional[str] = None) -> Optional[int]:
         """便捷方法：单帧摄入"""
         return self.get_pipeline().ingest(frame, content)
+
+    def ingest_batch(
+        self,
+        frames: List[SensorFrame],
+        contents: Optional[List[Optional[str]]] = None,
+    ) -> List[Optional[int]]:
+        """便捷方法：批量帧摄入"""
+        return self.get_pipeline().ingest_batch(frames, contents=contents)
 
     def flush_pipeline(self) -> Optional[int]:
         """强制刷新传感器缓冲"""
@@ -1245,6 +1273,8 @@ class EmbodiedMemory:
         """删除记忆（PowerMem + 具身扩展 + 索引）"""
         # 清理空间索引
         self.spatial_index.remove(memory_id)
+        # 失效缓存
+        self._invalidate_atom_cache(memory_id)
         # PowerMem 删除（级联删除 embodied_memories via FK）
         try:
             return self.memory.delete(memory_id)

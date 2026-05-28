@@ -275,6 +275,101 @@ class TestSystem2GlobalSelection:
 
 
 # ---------------------------------------------------------------------------
+# Associative Cache
+# ---------------------------------------------------------------------------
+
+class TestAssociativeCache:
+    def test_cache_hit_avoids_search(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        # seed storage so search returns something
+        for i in range(5):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        # first call populates cache
+        c1 = router._route_associative("test query", None, 10)
+        search_calls_before = len(em.memory.storage._store)
+
+        # second call should hit cache
+        c2 = router._route_associative("test query", None, 10)
+        assert c1 == c2
+        # cache still has one entry
+        assert len(router._associative_cache) == 1
+
+    def test_cache_miss_with_different_query(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        for i in range(5):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        router._route_associative("query A", None, 10)
+        router._route_associative("query B", None, 10)
+        assert len(router._associative_cache) == 2
+
+    def test_cache_ttl_expiration(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        router._assoc_cache_ttl = 0.01  # 10ms TTL
+        for i in range(3):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        router._route_associative("ttl query", None, 10)
+        assert len(router._associative_cache) == 1
+        import time
+        time.sleep(0.02)
+        cached = router._get_cached_associative("ttl query", None, 10)
+        assert cached is None
+
+    def test_index_concept_clears_cache(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        for i in range(3):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        router._route_associative("clear test", None, 10)
+        assert len(router._associative_cache) == 1
+        mid = em.add_atom(MemoryAtom(content="concept atom"))
+        em.index_concept(mid, "task", 1, "test_concept", 1.0)
+        assert len(router._associative_cache) == 0
+
+    def test_add_experience_edge_clears_cache(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        for i in range(3):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        router._route_associative("edge test", None, 10)
+        assert len(router._associative_cache) == 1
+        m1 = em.add_atom(MemoryAtom(content="a"))
+        m2 = em.add_atom(MemoryAtom(content="b"))
+        em.add_experience_edge(m1, m2, "related", 1.0)
+        assert len(router._associative_cache) == 0
+
+    def test_cache_eviction_at_max_size(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        router._MAX_ASSOC_CACHE = 4
+        for i in range(3):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        for i in range(6):
+            router._route_associative(f"query {i}", None, 10)
+
+        assert len(router._associative_cache) <= router._MAX_ASSOC_CACHE
+
+    def test_clear_cache_explicit(self, embodied_memory):
+        em = embodied_memory
+        router = em._router
+        for i in range(3):
+            em.memory.storage.add_memory({"content": f"item_{i}"})
+
+        router._route_associative("explicit", None, 10)
+        assert len(router._associative_cache) == 1
+        router.clear_cache()
+        assert len(router._associative_cache) == 0
+
+
+# ---------------------------------------------------------------------------
 # Tri-Route integration
 # ---------------------------------------------------------------------------
 

@@ -341,6 +341,12 @@ message SyncSceneObjectsResponse {
   repeated string transitions = 2;
 }
 
+message SyncSceneObjectsStreamResponse {
+  repeated WorldObjectPayload updated_objects_chunk = 1;
+  repeated string transitions_chunk = 2;
+  bool is_last = 3;
+}
+
 // ============================================================================
 // Tri-Route Cognitive Search
 // ============================================================================
@@ -448,6 +454,7 @@ service EmbodiedMemoryService {
   rpc GetSceneGraph(GetSceneGraphRequest) returns (GetSceneGraphResponse);
   rpc ComputeRelations(ComputeRelationsRequest) returns (ComputeRelationsResponse);
   rpc SyncSceneObjects(SyncSceneObjectsRequest) returns (SyncSceneObjectsResponse);
+  rpc SyncSceneObjectsStream(SyncSceneObjectsRequest) returns (stream SyncSceneObjectsStreamResponse);
 
   rpc CognitiveSearch(CognitiveSearchRequest) returns (CognitiveSearchResponse);
   rpc IndexConcept(IndexConceptRequest) returns (IndexConceptResponse);

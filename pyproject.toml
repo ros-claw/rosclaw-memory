@@ -85,6 +85,9 @@ test = [
 extras = [
     "sentence-transformers>=5.0.0",
 ]
+performance = [
+    "orjson>=3.9.0",
+]
 
 
 [project.urls]

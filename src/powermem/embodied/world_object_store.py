@@ -9,10 +9,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._json import fast_dumps, fast_loads
 from .types import Pose, Quaternion, SpatialRelation, Vec3, WorldObject
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ class WorldObjectStore:
         self.db_conn = db_conn
         # 事务深度（>0 时抑制中间 commit，与 EmbodiedMemory.transaction() 协同）
         self._transaction_depth = 0
+        # 读取缓存：避免重复反序列化高频访问的世界对象
+        self._object_cache: Dict[str, WorldObject] = {}
+        self._MAX_OBJECT_CACHE = 512
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -48,11 +51,11 @@ class WorldObjectStore:
             obj.pose.orientation.x,
             obj.pose.orientation.y,
             obj.pose.orientation.z,
-            json.dumps(obj.size) if obj.size else None,
-            json.dumps(obj.color) if obj.color else None,
+            fast_dumps(obj.size) if obj.size else None,
+            fast_dumps(obj.color) if obj.color else None,
             obj.mesh_path,
-            json.dumps(obj.physics_props) if obj.physics_props else None,
-            json.dumps(obj.semantic_tags) if obj.semantic_tags else None,
+            fast_dumps(obj.physics_props) if obj.physics_props else None,
+            fast_dumps(obj.semantic_tags) if obj.semantic_tags else None,
             obj.scene_id,
             obj.parent_obj_id,
             obj.state,
@@ -95,10 +98,10 @@ class WorldObjectStore:
                 confidence, last_seen_sec,
             ) = row
 
-        size = tuple(json.loads(size_json)) if size_json else None
-        color = tuple(json.loads(color_json)) if color_json else None
-        physics_props = json.loads(physics_props_json) if physics_props_json else {}
-        semantic_tags = json.loads(semantic_tags_json) if semantic_tags_json else []
+        size = tuple(fast_loads(size_json)) if size_json else None
+        color = tuple(fast_loads(color_json)) if color_json else None
+        physics_props = fast_loads(physics_props_json) if physics_props_json else {}
+        semantic_tags = fast_loads(semantic_tags_json) if semantic_tags_json else []
         lcp = None
         if last_confirmed_pos_x is not None:
             lcp = Vec3(
@@ -177,11 +180,25 @@ class WorldObjectStore:
         cursor.execute(sql, self._world_object_to_row(obj))
         if self._transaction_depth == 0:
             self.db_conn.commit()
+        self._cache_object(obj)
         logger.debug("Saved world object %s (%s)", obj.obj_id, obj.name)
         return obj.obj_id
 
+    def _cache_object(self, obj: WorldObject) -> None:
+        self._object_cache[obj.obj_id] = obj
+        if len(self._object_cache) > self._MAX_OBJECT_CACHE:
+            to_evict = list(self._object_cache.keys())[: self._MAX_OBJECT_CACHE // 4]
+            for k in to_evict:
+                del self._object_cache[k]
+
+    def _invalidate_object_cache(self, obj_id: str) -> None:
+        self._object_cache.pop(obj_id, None)
+
     def load(self, obj_id: str) -> Optional[WorldObject]:
-        """按 obj_id 读取 WorldObject"""
+        """按 obj_id 读取 WorldObject（带 LRU 缓存）"""
+        cached = self._object_cache.get(obj_id)
+        if cached is not None:
+            return cached
         cursor = self.db_conn.cursor()
         cursor.execute(
             "SELECT obj_id, obj_type, name, pos_x, pos_y, pos_z, "
@@ -197,7 +214,9 @@ class WorldObjectStore:
         row = cursor.fetchone()
         if row is None:
             return None
-        return self._row_to_world_object(row)
+        obj = self._row_to_world_object(row)
+        self._cache_object(obj)
+        return obj
 
     def load_many(self, obj_ids: List[str]) -> List[WorldObject]:
         """批量读取 WorldObject"""
@@ -322,6 +341,7 @@ class WorldObjectStore:
             )
         if self._transaction_depth == 0:
             self.db_conn.commit()
+        self._invalidate_object_cache(obj_id)
         return cursor.rowcount > 0
 
     def update_state(self, obj_id: str, state: str) -> bool:
@@ -333,6 +353,7 @@ class WorldObjectStore:
         )
         if self._transaction_depth == 0:
             self.db_conn.commit()
+        self._invalidate_object_cache(obj_id)
         return cursor.rowcount > 0
 
     def update_occlusion(
@@ -352,6 +373,7 @@ class WorldObjectStore:
         )
         if self._transaction_depth == 0:
             self.db_conn.commit()
+        self._invalidate_object_cache(obj_id)
         return cursor.rowcount > 0
 
     def delete(self, obj_id: str) -> bool:
@@ -360,6 +382,7 @@ class WorldObjectStore:
         cursor.execute("DELETE FROM embodied_world_objects WHERE obj_id = ?", (obj_id,))
         if self._transaction_depth == 0:
             self.db_conn.commit()
+        self._invalidate_object_cache(obj_id)
         return cursor.rowcount > 0
 
     # -----------------------------------------------------------------------

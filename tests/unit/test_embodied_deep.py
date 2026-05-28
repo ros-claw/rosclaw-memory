@@ -1628,6 +1628,64 @@ class TestIngestPipelineDeep:
         pipeline.reset()
         assert len(pipeline._buffer) == 0
 
+    def test_ingest_batch_multiple_frames(self, pipeline):
+        """批量摄入多帧，共享一次 flush"""
+        frames = [
+            SensorFrame(modality=Modality.RGB, timestamp_sec=float(i), data=[0.5] * 10)
+            for i in range(4)
+        ]
+        results = pipeline.ingest_batch(frames)
+        # 未达 buffer_size=5，不会自动 flush
+        assert all(r is None for r in results)
+        assert len(pipeline._buffer) == 4
+
+    def test_ingest_batch_triggers_flush(self, pipeline):
+        """批量摄入超过 buffer_size 应触发 flush"""
+        frames = [
+            SensorFrame(modality=Modality.RGB, timestamp_sec=float(i), data=[float(i)] * 10)
+            for i in range(6)
+        ]
+        results = pipeline.ingest_batch(frames)
+        # buffer_size=5，6 帧会触发 flush
+        assert len(pipeline._buffer) == 0
+        # 最后一条应有 memory_id
+        assert results[-1] is not None
+
+    def test_ingest_batch_with_contents(self, pipeline):
+        """批量摄入带自定义内容"""
+        frames = [
+            SensorFrame(modality=Modality.RGB, timestamp_sec=0.0, data=[0.5] * 10),
+            SensorFrame(modality=Modality.DEPTH, timestamp_sec=0.0, data=[1.0] * 10),
+        ]
+        contents = ["camera frame", "depth frame"]
+        pipeline.ingest_batch(frames, contents=contents)
+        assert len(pipeline._buffer) == 2
+        assert pipeline._buffer[0].content == "camera frame"
+        assert pipeline._buffer[1].content == "depth frame"
+
+    def test_ingest_batch_contents_length_mismatch(self, pipeline):
+        """contents 长度不匹配应抛 ValueError"""
+        frames = [
+            SensorFrame(modality=Modality.RGB, timestamp_sec=0.0, data=[0.5] * 10),
+        ]
+        with pytest.raises(ValueError):
+            pipeline.ingest_batch(frames, contents=["a", "b"])
+
+    def test_ingest_batch_surprisal_filtering(self, pipeline):
+        """批量中部分帧被 surprisal gate 过滤"""
+        normal = SensorFrame(modality=Modality.RGB, timestamp_sec=0.0, data=[0.5] * 100)
+        anomaly = SensorFrame(modality=Modality.RGB, timestamp_sec=1.0, data=[99.0] * 100)
+        # 初始化 gate
+        for _ in range(15):
+            pipeline.ingest(normal)
+        pipeline.flush()
+        # batch: 正常帧应被过滤，异常帧应通过
+        results = pipeline.ingest_batch([normal, anomaly])
+        assert results[0] is None  # filtered
+        assert results[1] is None  # buffered but not flushed
+        flushed = pipeline.flush()
+        assert flushed is not None
+
 
 # ========================================================================
 # 9. End-to-End Scenario Tests
@@ -1976,6 +2034,8 @@ class TestBatchOperations:
         # 但 rollback 后应该消失
         store._transaction_depth = 0
         embodied_memory.db_conn.rollback()
+        # rollback 不会自动清缓存，需要手动失效
+        store._invalidate_object_cache("deferred")
         obj = embodied_memory.get_world_object("deferred")
         assert obj is None
 

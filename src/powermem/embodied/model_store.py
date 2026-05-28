@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ._json import fast_dumps, fast_loads
 from .collision import CollisionBody, CollisionChecker, build_collision_bodies
 from .parsers.base import ParseResult
 from .physical_model import RobotDynamics
@@ -92,15 +92,15 @@ class ModelStore:
         params = (
             model_id,
             model_type,
-            json.dumps(dyn.joint_names),
-            json.dumps([dh.to_dict() for dh in dyn.dh_params]),
+            fast_dumps(dyn.joint_names),
+            fast_dumps([dh.to_dict() for dh in dyn.dh_params]),
             dyn.mass_matrix_expr,
             dyn.coriolis_matrix_expr,
             dyn.gravity_vector_expr,
-            json.dumps([jl.to_dict() for jl in dyn.joint_limits]),
-            json.dumps(dyn.link_masses),
-            json.dumps(dyn.link_inertias),
-            json.dumps(dyn.collision_geoms),
+            fast_dumps([jl.to_dict() for jl in dyn.joint_limits]),
+            fast_dumps(dyn.link_masses),
+            fast_dumps(dyn.link_inertias),
+            fast_dumps(dyn.collision_geoms),
             result.source_hash or self._hash_source(result),
         )
         try:
@@ -122,7 +122,7 @@ class ModelStore:
     @staticmethod
     def _hash_source(result: ParseResult) -> str:
         """对解析结果做稳定哈希"""
-        payload = json.dumps(result.to_dict(), sort_keys=True)
+        payload = fast_dumps(result.to_dict(), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
     # -----------------------------------------------------------------------
@@ -150,12 +150,12 @@ class ModelStore:
         ) = row
 
         from .physical_model import DHParameter, JointLimit
-        joint_names = json.loads(joint_names_json or "[]")
-        dh_params = [DHParameter.from_dict(d) for d in json.loads(dh_params_json or "[]")]
-        joint_limits = [JointLimit.from_dict(d) for d in json.loads(joint_limits_json or "[]")]
-        link_masses = json.loads(link_masses_json or "[]")
-        link_inertias = json.loads(link_inertias_json or "[]")
-        collision_geoms = json.loads(collision_geoms_json or "[]")
+        joint_names = fast_loads(joint_names_json or "[]")
+        dh_params = [DHParameter.from_dict(d) for d in fast_loads(dh_params_json or "[]")]
+        joint_limits = [JointLimit.from_dict(d) for d in fast_loads(joint_limits_json or "[]")]
+        link_masses = fast_loads(link_masses_json or "[]")
+        link_inertias = fast_loads(link_inertias_json or "[]")
+        collision_geoms = fast_loads(collision_geoms_json or "[]")
 
         dynamics = RobotDynamics(
             joint_names=joint_names,

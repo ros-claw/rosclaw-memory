@@ -142,59 +142,93 @@ class IngestPipeline:
         Returns:
             memory_id if stored, None if filtered by surprisal gate
         """
-        # 1. 特征提取
+        results = self.ingest_batch([frame], contents=[content])
+        return results[0] if results else None
+
+    def ingest_batch(
+        self,
+        frames: List[SensorFrame],
+        contents: Optional[List[Optional[str]]] = None,
+    ) -> List[Optional[int]]:
+        """批量摄入 — 多帧共享一次 flush 开销
+
+        Args:
+            frames: 传感器帧列表
+            contents: 每帧对应的内容描述（可选，默认自动生成）
+
+        Returns:
+            每帧对应的 memory_id；若被 surprisal gate 过滤则为 None
+        """
+        if contents is None:
+            contents = [None] * len(frames)
+        if len(contents) != len(frames):
+            raise ValueError("contents length must match frames length")
+
         extractor = get_feature_extractor(self.feature_extractor_name) or _default_feature_extractor
-        feature_vec, feat_meta = extractor(frame.data, frame.modality)
+        results: List[Optional[int]] = []
+        any_stored = False
 
-        # 2. 构建 PerceptualSnapshot
-        perceptual = PerceptualSnapshot(
-            modality=frame.modality,
-            feature_vec=feature_vec,
-            sensor_pose=frame.sensor_pose,
-            uncertainty=frame.uncertainty,
-            sensor_meta={
-                "frame_id": frame.frame_id,
-                "feature_meta": feat_meta,
-                **frame.metadata,
-            },
-        )
+        for frame, content in zip(frames, contents):
+            # 1. 特征提取
+            feature_vec, feat_meta = extractor(frame.data, frame.modality)
 
-        # 3. 构建 MemoryAtom
-        atom = MemoryAtom(
-            content=content or f"{frame.modality.value}_observation_at_{frame.timestamp_sec:.3f}",
-            spatial=frame.sensor_pose.position if frame.sensor_pose else None,
-            temporal=None,  # 单帧瞬时记忆，时间区间在 flush 时扩展
-            perceptual=perceptual,
-            uncertainty=frame.uncertainty,
-            action=MemoryAction.OBSERVE,
-        )
+            # 2. 构建 PerceptualSnapshot
+            perceptual = PerceptualSnapshot(
+                modality=frame.modality,
+                feature_vec=feature_vec,
+                sensor_pose=frame.sensor_pose,
+                uncertainty=frame.uncertainty,
+                sensor_meta={
+                    "frame_id": frame.frame_id,
+                    "timestamp_sec": frame.timestamp_sec,
+                    "feature_meta": feat_meta,
+                    **frame.metadata,
+                },
+            )
 
-        # 4. 惊奇门控
-        if self.surprisal_gate is not None:
-            predictor_id = f"{frame.modality.value}_{frame.frame_id}"
-            # 使用 feature_vec 的第一维作为观测值（简化）
-            observation_value = feature_vec[0] if feature_vec else 0.0
-            passed_atom = self.surprisal_gate.filter_atom(atom, observation_value, predictor_id)
-            if passed_atom is None:
-                logger.debug("SurprisalGate blocked %s frame at t=%.3f", frame.modality.value, frame.timestamp_sec)
-                return None
-            atom = passed_atom
+            # 3. 构建 MemoryAtom
+            atom = MemoryAtom(
+                content=content or f"{frame.modality.value}_observation_at_{frame.timestamp_sec:.3f}",
+                spatial=frame.sensor_pose.position if frame.sensor_pose else None,
+                temporal=None,
+                perceptual=perceptual,
+                uncertainty=frame.uncertainty,
+                action=MemoryAction.OBSERVE,
+            )
 
-        # 5. 缓冲或立即存储
-        self._buffer.append(atom)
+            # 4. 惊奇门控
+            if self.surprisal_gate is not None:
+                predictor_id = f"{frame.modality.value}_{frame.frame_id}"
+                observation_value = feature_vec[0] if feature_vec else 0.0
+                passed_atom = self.surprisal_gate.filter_atom(atom, observation_value, predictor_id)
+                if passed_atom is None:
+                    logger.debug("SurprisalGate blocked %s frame at t=%.3f", frame.modality.value, frame.timestamp_sec)
+                    results.append(None)
+                    continue
+                atom = passed_atom
 
-        # 检查是否需要 flush
+            # 5. 缓冲
+            self._buffer.append(atom)
+            results.append(None)  # 尚未存储，等待 flush
+            any_stored = True
+
+        # 6. 批量 flush 判定
         now = time.time()
         should_flush = (
             len(self._buffer) >= self.buffer_size
             or (now - self._last_flush_time) >= self.flush_interval_sec
+            or not any_stored  # 全部被过滤时立即返回，无需等待 flush
         )
 
-        if should_flush:
-            return self.flush()
+        if should_flush and self._buffer:
+            last_id = self.flush()
+            # 将最后一条非 None 结果替换为实际 memory_id
+            for i in reversed(range(len(results))):
+                if results[i] is None and any_stored:
+                    results[i] = last_id
+                    break
 
-        # 单条模式下返回缓冲中的 atom（未分配 memory_id）
-        return None
+        return results
 
     def flush(self) -> Optional[int]:
         """将缓冲区的记忆批量写入存储

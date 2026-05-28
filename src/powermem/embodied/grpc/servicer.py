@@ -580,6 +580,39 @@ class EmbodiedMemoryServicer(embodied_memory_pb2_grpc.EmbodiedMemoryServiceServi
             )
         return self._handle(context, _do)
 
+    def SyncSceneObjectsStream(self, request, context):
+        """Server-streaming variant: yield objects in chunks for large scenes."""
+        def _do():
+            detections = [_pb_world_object_to_py(d) for d in request.detections]
+            report = self.em.sync_scene_objects(
+                scene_id=request.scene_id,
+                detections=detections,
+                timestamp_sec=request.timestamp_sec,
+                occlusion_radius=request.occlusion_radius or 0.5,
+            )
+            updated = self.em.search_world_objects(
+                center=Vec3(0, 0, 0),
+                radius=1e6,
+                scene_id=request.scene_id,
+                limit=10000,
+            )
+            chunk_size = 100
+            for i in range(0, len(updated), chunk_size):
+                chunk = updated[i : i + chunk_size]
+                yield embodied_memory_pb2.SyncSceneObjectsStreamResponse(
+                    updated_objects_chunk=[_py_world_object_to_pb(o) for o in chunk],
+                    transitions_chunk=report.transitions if i == 0 else [],
+                    is_last=(i + chunk_size >= len(updated)),
+                )
+        try:
+            with self._lock:
+                yield from _do()
+        except Exception as e:
+            logger.exception("gRPC streaming handler error")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            raise
+
     # -----------------------------------------------------------------------
     # Tri-Route Cognitive Search
     # -----------------------------------------------------------------------

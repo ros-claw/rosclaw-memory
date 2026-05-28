@@ -140,6 +140,27 @@ class VoxelHash:
     def get_all_ids(self) -> Set[int]:
         return set(self._id_to_cell.keys())
 
+    def rebuild(
+        self,
+        new_voxel_size: float,
+        id_to_position: Dict[int, Vec3],
+        frame_id: str = "world",
+    ) -> None:
+        """用新的体素尺寸重建索引。
+
+        Args:
+            new_voxel_size: 新的体素边长
+            id_to_position: 所有 memory_id -> position 映射
+            frame_id: 默认坐标系
+        """
+        if new_voxel_size <= 0:
+            raise ValueError("new_voxel_size must be positive")
+        self.voxel_size = new_voxel_size
+        self._buckets.clear()
+        self._id_to_cell.clear()
+        for memory_id, position in id_to_position.items():
+            self.insert(memory_id, position, frame_id)
+
     def stats(self) -> Dict[str, Any]:
         total_ids = len(self._id_to_cell)
         total_buckets = len(self._buckets)
@@ -236,6 +257,64 @@ class SpatialIndex:
 
     def get_all_ids(self) -> Set[int]:
         return self.voxel.get_all_ids()
+
+    def optimize_voxel_size(self, target_avg_load: float = 10.0) -> float:
+        """根据数据分布自适应调整体素尺寸。
+
+        策略：
+        1. 计算数据 AABB 对角线长度 D
+        2. 设目标平均负载为 target_avg_load
+        3. 理想 voxel_size = D / cbrt(N / target_avg_load)
+
+        Returns:
+            新的 voxel_size
+        """
+        if not self._id_to_position:
+            return self.voxel.voxel_size
+
+        positions = list(self._id_to_position.values())
+        n = len(positions)
+
+        # AABB
+        min_x = min(p.x for p in positions)
+        min_y = min(p.y for p in positions)
+        min_z = min(p.z for p in positions)
+        max_x = max(p.x for p in positions)
+        max_y = max(p.y for p in positions)
+        max_z = max(p.z for p in positions)
+
+        dx = max_x - min_x
+        dy = max_y - min_y
+        dz = max_z - min_z
+        diagonal = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+        if diagonal == 0:
+            # 所有点重合，保持当前尺寸
+            return self.voxel.voxel_size
+
+        # 理想 voxel_size: 让平均每个体素包含 target_avg_load 个点
+        # volume = dx * dy * dz
+        # target_buckets = n / target_avg_load
+        # voxel_volume = volume / target_buckets
+        # voxel_size = cbrt(voxel_volume)
+        volume = max(dx, 1e-9) * max(dy, 1e-9) * max(dz, 1e-9)
+        target_buckets = max(n / target_avg_load, 1.0)
+        ideal_size = (volume / target_buckets) ** (1.0 / 3.0)
+
+        # Clamp: 避免极端值（小于 1mm 或大于 100m 无意义）
+        new_size = max(0.001, min(ideal_size, 100.0))
+
+        if abs(new_size - self.voxel.voxel_size) / self.voxel.voxel_size > 0.1:
+            logger.info(
+                "SpatialIndex adaptive resize: %.4f -> %.4f (n=%d, diag=%.2f)",
+                self.voxel.voxel_size,
+                new_size,
+                n,
+                diagonal,
+            )
+            self.voxel.rebuild(new_size, self._id_to_position)
+
+        return new_size
 
     def query_nearest(
         self,

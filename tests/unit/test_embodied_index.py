@@ -144,6 +144,52 @@ class TestSpatialIndex:
         si.remove(100)
         assert 100 not in si.get_all_ids()
 
+    def test_optimize_voxel_size_dense_data(self, sqlite_conn):
+        """密集数据应自动缩小体素尺寸以降低负载"""
+        ddl_list, _ = get_dialect_ddl("sqlite")
+        for ddl in ddl_list:
+            sqlite_conn.execute(ddl)
+        si = SpatialIndex(sqlite_conn, voxel_size=10.0)
+        # 1000 个点均匀分布在 1x1x1 的空间内
+        import random
+        random.seed(42)
+        for i in range(1000):
+            si.add(
+                i,
+                Vec3(random.random(), random.random(), random.random()),
+            )
+        old_size = si.voxel.voxel_size
+        new_size = si.optimize_voxel_size(target_avg_load=10.0)
+        assert new_size < old_size
+        stats = si.voxel.stats()
+        assert stats["avg_load"] <= 50.0  # 随机分布允许一定误差
+
+    def test_optimize_voxel_size_sparse_data(self, sqlite_conn):
+        """稀疏数据应自动增大体素尺寸以减少空桶"""
+        ddl_list, _ = get_dialect_ddl("sqlite")
+        for ddl in ddl_list:
+            sqlite_conn.execute(ddl)
+        si = SpatialIndex(sqlite_conn, voxel_size=0.001)
+        # 10 个点分散在 100x100x100 的空间
+        for i in range(10):
+            si.add(i, Vec3(float(i) * 10, float(i) * 10, float(i) * 10))
+        old_size = si.voxel.voxel_size
+        new_size = si.optimize_voxel_size(target_avg_load=2.0)
+        assert new_size > old_size
+
+    def test_voxel_rebuild_preserves_data(self):
+        """重建后数据不应丢失"""
+        vh = VoxelHash(voxel_size=1.0)
+        positions = {i: Vec3(float(i), 0.0, 0.0) for i in range(20)}
+        for mid, pos in positions.items():
+            vh.insert(mid, pos)
+        vh.rebuild(0.5, positions)
+        assert vh.get_all_ids() == set(positions.keys())
+        # 查询仍应正确
+        results = vh.query_exact(Vec3(5.0, 0.0, 0.0), radius=1.0, id_to_position=positions)
+        ids = {mid for mid, _ in results}
+        assert 5 in ids
+
 
 # ---------------------------------------------------------------------------
 # TemporalIndex (with SQLite)

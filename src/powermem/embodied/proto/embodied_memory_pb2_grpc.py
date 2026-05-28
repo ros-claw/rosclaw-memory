@@ -138,6 +138,11 @@ class EmbodiedMemoryServiceStub(object):
                 request_serializer=embodied__memory__pb2.SyncSceneObjectsRequest.SerializeToString,
                 response_deserializer=embodied__memory__pb2.SyncSceneObjectsResponse.FromString,
                 _registered_method=True)
+        self.SyncSceneObjectsStream = channel.unary_stream(
+                '/powermem.embodied.EmbodiedMemoryService/SyncSceneObjectsStream',
+                request_serializer=embodied__memory__pb2.SyncSceneObjectsRequest.SerializeToString,
+                response_deserializer=embodied__memory__pb2.SyncSceneObjectsStreamResponse.FromString,
+                _registered_method=True)
         self.CognitiveSearch = channel.unary_unary(
                 '/powermem.embodied.EmbodiedMemoryService/CognitiveSearch',
                 request_serializer=embodied__memory__pb2.CognitiveSearchRequest.SerializeToString,
@@ -292,6 +297,12 @@ class EmbodiedMemoryServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SyncSceneObjectsStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CognitiveSearch(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -424,6 +435,11 @@ def add_EmbodiedMemoryServiceServicer_to_server(servicer, server):
                     servicer.SyncSceneObjects,
                     request_deserializer=embodied__memory__pb2.SyncSceneObjectsRequest.FromString,
                     response_serializer=embodied__memory__pb2.SyncSceneObjectsResponse.SerializeToString,
+            ),
+            'SyncSceneObjectsStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.SyncSceneObjectsStream,
+                    request_deserializer=embodied__memory__pb2.SyncSceneObjectsRequest.FromString,
+                    response_serializer=embodied__memory__pb2.SyncSceneObjectsStreamResponse.SerializeToString,
             ),
             'CognitiveSearch': grpc.unary_unary_rpc_method_handler(
                     servicer.CognitiveSearch,
@@ -995,6 +1011,33 @@ class EmbodiedMemoryService(object):
             '/powermem.embodied.EmbodiedMemoryService/SyncSceneObjects',
             embodied__memory__pb2.SyncSceneObjectsRequest.SerializeToString,
             embodied__memory__pb2.SyncSceneObjectsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SyncSceneObjectsStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/powermem.embodied.EmbodiedMemoryService/SyncSceneObjectsStream',
+            embodied__memory__pb2.SyncSceneObjectsRequest.SerializeToString,
+            embodied__memory__pb2.SyncSceneObjectsStreamResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -14,9 +14,11 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ._json import fast_dumps
 from .memory_atom import MemoryAtom
 from .types import IntervalRelation, TemporalInterval, Vec3
 
@@ -100,6 +102,7 @@ class CognitiveRouter:
         gamma: float = 0.3,
         sigma_spatial: float = 3.0,
         sigma_temporal: float = 3600.0,
+        assoc_cache_ttl: float = 5.0,
     ):
         self.em = embodied_memory
         self.alpha = alpha
@@ -107,6 +110,9 @@ class CognitiveRouter:
         self.gamma = gamma
         self.sigma_spatial = sigma_spatial
         self.sigma_temporal = sigma_temporal
+        self._assoc_cache_ttl = assoc_cache_ttl
+        self._associative_cache: Dict[str, Tuple[Dict[int, _Candidate], float]] = {}
+        self._MAX_ASSOC_CACHE = 64
 
     # ========================================================================
     # 公共入口
@@ -216,13 +222,58 @@ class CognitiveRouter:
     # System-1: Associative Route（联想/相似度路由）
     # ========================================================================
 
+    def _assoc_cache_key(
+        self, query: str, filters: Optional[Dict[str, Any]], limit: int
+    ) -> str:
+        """生成 associative cache key。"""
+        filters_key = fast_dumps(filters, sort_keys=True) if filters else ""
+        return f"{query}::{filters_key}::{limit}"
+
+    def _get_cached_associative(
+        self, query: str, filters: Optional[Dict[str, Any]], limit: int
+    ) -> Optional[Dict[int, _Candidate]]:
+        key = self._assoc_cache_key(query, filters, limit)
+        entry = self._associative_cache.get(key)
+        if entry is None:
+            return None
+        candidates, ts = entry
+        if time.monotonic() - ts > self._assoc_cache_ttl:
+            self._associative_cache.pop(key, None)
+            return None
+        return candidates
+
+    def _set_cached_associative(
+        self,
+        query: str,
+        filters: Optional[Dict[str, Any]],
+        limit: int,
+        candidates: Dict[int, _Candidate],
+    ) -> None:
+        key = self._assoc_cache_key(query, filters, limit)
+        self._associative_cache[key] = (candidates, time.monotonic())
+        if len(self._associative_cache) > self._MAX_ASSOC_CACHE:
+            # evict oldest 25%
+            sorted_items = sorted(
+                self._associative_cache.items(), key=lambda x: x[1][1]
+            )
+            for k, _ in sorted_items[: self._MAX_ASSOC_CACHE // 4]:
+                del self._associative_cache[k]
+
+    def clear_cache(self) -> None:
+        """清空 associative cache（在图结构变更时调用）。"""
+        self._associative_cache.clear()
+
     def _route_associative(
         self,
         query: str,
         filters: Optional[Dict[str, Any]],
         limit: int,
     ) -> Dict[int, _Candidate]:
-        """System-1: 基于 PowerMem 语义相似度检索"""
+        """System-1: 基于 PowerMem 语义相似度检索（带 TTL cache）。"""
+        cached = self._get_cached_associative(query, filters, limit)
+        if cached is not None:
+            return cached
+
         candidates: Dict[int, _Candidate] = {}
         try:
             semantic_result = self.em.memory.search(query, filters=filters, limit=limit * 3)
@@ -235,6 +286,7 @@ class CognitiveRouter:
                     )
         except Exception as e:
             logger.warning("Associative route failed: %s", e)
+        self._set_cached_associative(query, filters, limit, candidates)
         return candidates
 
     # ========================================================================
@@ -548,6 +600,7 @@ class CognitiveRouter:
                 (memory_id, dimension, layer, concept_id, confidence),
             )
             self.em.db_conn.commit()
+            self.clear_cache()
         except Exception as e:
             logger.warning("Failed to index concept %s for memory %s: %s", concept_id, memory_id, e)
 
@@ -562,7 +615,6 @@ class CognitiveRouter:
     ) -> None:
         """在经验图中添加一条物理关系边"""
         cursor = self.em.db_conn.cursor()
-        import json
         try:
             cursor.execute(
                 """
@@ -576,11 +628,12 @@ class CognitiveRouter:
                     target_memory_id,
                     edge_type,
                     strength,
-                    json.dumps(spatial_context) if spatial_context else None,
-                    json.dumps(temporal_context) if temporal_context else None,
+                    fast_dumps(spatial_context) if spatial_context else None,
+                    fast_dumps(temporal_context) if temporal_context else None,
                 ),
             )
             self.em.db_conn.commit()
+            self.clear_cache()
         except Exception as e:
             logger.warning(
                 "Failed to add experience edge %s -> %s: %s", source_memory_id, target_memory_id, e
