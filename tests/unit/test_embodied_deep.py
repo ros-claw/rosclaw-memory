@@ -2145,3 +2145,77 @@ class TestBatchAtomLoading:
 
         assert seq_calls == len(mids)
         assert batch_calls == 1
+
+
+class TestTrajectoryPositionCache:
+    """MemoryAtom.trajectory_positions 懒解析缓存测试"""
+
+    def test_trajectory_positions_precomputed_on_create(self):
+        waypoints = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(1, 0, 0), 1.0),
+            (Vec3(2, 0, 0), 2.0),
+        ]
+        atom = MemoryAtom.from_trajectory("test", waypoints)
+        assert atom._trajectory_positions is not None
+        assert len(atom.trajectory_positions) == 3
+        assert atom.trajectory_positions[0] == Vec3(0, 0, 0)
+
+    def test_trajectory_positions_lazy_parse_from_metadata(self):
+        atom = MemoryAtom(
+            content="lazy",
+            embodied_meta={
+                "trajectory": {
+                    "waypoints": [
+                        {"position": {"x": 3, "y": 4, "z": 5}, "timestamp_sec": 0.0},
+                        {"position": {"x": 6, "y": 7, "z": 8}, "timestamp_sec": 1.0},
+                    ],
+                    "signature": [0.0] * 8,
+                }
+            },
+        )
+        assert atom._trajectory_positions is None
+        positions = atom.trajectory_positions
+        assert len(positions) == 2
+        assert positions[0] == Vec3(3, 4, 5)
+        assert positions[1] == Vec3(6, 7, 8)
+        # 二次访问应命中缓存
+        assert atom._trajectory_positions is positions
+
+    def test_trajectory_positions_empty_when_no_trajectory(self):
+        atom = MemoryAtom(content="no traj")
+        assert atom.trajectory_positions == []
+        assert atom._trajectory_positions == []
+
+    def test_search_trajectory_near_uses_cache(self, embodied_memory):
+        waypoints = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(1, 0, 0), 1.0),
+            (Vec3(2, 0, 0), 2.0),
+        ]
+        mid = embodied_memory.record_trajectory("line", waypoints)
+        atom = embodied_memory.get_atom(mid)
+        assert atom._trajectory_positions is not None
+        assert len(atom.trajectory_positions) == 3
+
+        results = embodied_memory.search_trajectory_near(Vec3(1, 0, 0), radius=0.5)
+        assert len(results) == 1
+
+    def test_search_similar_trajectories_uses_cache(self, embodied_memory):
+        w1 = [
+            (Vec3(0, 0, 0), 0.0),
+            (Vec3(1, 0, 0), 1.0),
+            (Vec3(2, 0, 0), 2.0),
+        ]
+        embodied_memory.record_trajectory("original", w1)
+
+        w2 = [
+            (Vec3(0.1, 0, 0), 0.0),
+            (Vec3(1.1, 0, 0), 1.0),
+            (Vec3(2.1, 0, 0), 2.0),
+        ]
+        results = embodied_memory.search_similar_trajectories(query_waypoints=w2, top_k=5)
+        assert len(results) == 1
+        atom, dtw = results[0]
+        assert atom._trajectory_positions is not None
+        assert dtw < 0.5

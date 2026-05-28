@@ -966,13 +966,9 @@ class EmbodiedMemory:
             if not traj:
                 continue
 
-            # 逐路点精确判断
+            # 逐路点精确判断（使用缓存的解析后坐标）
             min_dist: Optional[float] = None
-            for wp in traj.get("waypoints", []):
-                pos_dict = wp.get("position")
-                if not pos_dict:
-                    continue
-                pos = Vec3.from_dict(pos_dict)
+            for pos in atom.trajectory_positions:
                 dist = center.distance_to(pos)
                 if min_dist is None or dist < min_dist:
                     min_dist = dist
@@ -1121,15 +1117,10 @@ class EmbodiedMemory:
             if not signature_compatible(query_sig, cand_sig):
                 continue
 
-            # 签名通过后，重建路点做精确 DTW
-            cand_waypoints = []
-            for wp in traj_meta.get("waypoints", []):
-                pos = wp.get("position")
-                if pos:
-                    cand_waypoints.append((Vec3.from_dict(pos), wp.get("timestamp_sec", 0.0)))
-            if not cand_waypoints:
+            # 签名通过后，使用缓存的路点坐标做精确 DTW
+            cand_positions = atom.trajectory_positions
+            if not cand_positions:
                 continue
-            cand_positions = [wp[0] for wp in cand_waypoints]
             dtw = dtw_distance_normalized(
                 query_positions, cand_positions, max_distance=max_dtw_distance
             )

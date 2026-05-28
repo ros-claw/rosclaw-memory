@@ -79,6 +79,7 @@ class MemoryAtom:
     # --- 内部缓存 ---
     _content_hash: Optional[str] = field(default=None, repr=False)
     _embedding: Optional[List[float]] = field(default=None, repr=False)
+    _trajectory_positions: Optional[List[Vec3]] = field(default=None, repr=False)
 
     # ========================================================================
     # 工厂方法
@@ -264,7 +265,7 @@ class MemoryAtom:
             end_sec=waypoints[-1][1],
         )
 
-        return cls(
+        atom = cls(
             content=content,
             spatial=spatial,
             temporal=temporal,
@@ -272,6 +273,8 @@ class MemoryAtom:
             action=MemoryAction.ACT,
             **kwargs,
         )
+        atom._trajectory_positions = [pos for pos, _ in waypoints]
+        return atom
 
     # ========================================================================
     # PowerMem 互操作：metadata <-> MemoryAtom
@@ -394,6 +397,23 @@ class MemoryAtom:
     @embedding.setter
     def embedding(self, value: Optional[List[float]]) -> None:
         self._embedding = value
+
+    @property
+    def trajectory_positions(self) -> List[Vec3]:
+        """懒解析并缓存轨迹路点空间坐标（避免重复 JSON dict 反序列化）"""
+        if self._trajectory_positions is not None:
+            return self._trajectory_positions
+        traj = self.embodied_meta.get("trajectory")
+        if not traj:
+            self._trajectory_positions = []
+            return self._trajectory_positions
+        positions: List[Vec3] = []
+        for wp in traj.get("waypoints", []):
+            pos = wp.get("position")
+            if pos:
+                positions.append(Vec3.from_dict(pos))
+        self._trajectory_positions = positions
+        return self._trajectory_positions
 
     @property
     def is_significant(self) -> bool:
