@@ -65,6 +65,7 @@ from powermem.embodied.types import (
     TemporalInterval,
     UncertaintyEstimate,
     UncertaintyType,
+    WorldObject,
 )
 
 
@@ -1933,3 +1934,64 @@ class TestModelStoreEndToEnd:
         store.save(result, model_id="fk_col_overlap")
         pairs = store.check_collision_at_config("fk_col_overlap", [0.0])
         assert len(pairs) == 1
+
+
+# ========================================================================
+# 11. Batch Operations & Transactions
+# ========================================================================
+
+class TestBatchOperations:
+    """批量写入与事务管理测试"""
+
+    def test_batch_add_atoms(self, embodied_memory):
+        atoms = [
+            MemoryAtom(content=f"batch_{i}", spatial=Vec3(float(i), 0, 0))
+            for i in range(50)
+        ]
+        mids = embodied_memory.batch_add_atoms(atoms)
+        assert len(mids) == 50
+        for i, mid in enumerate(mids):
+            atom = embodied_memory.get_atom(mid)
+            assert atom is not None
+            assert atom.content == f"batch_{i}"
+
+    def test_transaction_context_manager(self, embodied_memory):
+        with embodied_memory.transaction():
+            for i in range(10):
+                embodied_memory.add_world_object(WorldObject(
+                    obj_id=f"tx_obj_{i}", obj_type="box", scene_id="tx_scene",
+                ))
+
+        for i in range(10):
+            obj = embodied_memory.get_world_object(f"tx_obj_{i}")
+            assert obj is not None
+            assert obj.scene_id == "tx_scene"
+
+    def test_transaction_suppresses_intermediate_commits(self, embodied_memory):
+        """事务中写入的对象在未提交前不应被外部看到（通过同一连接验证）"""
+        store = embodied_memory.world_object_store
+        store._transaction_depth = 1
+        store.save(WorldObject(obj_id="deferred", obj_type="sphere", scene_id="s1"))
+        # 同一连接，未 commit，应该能看到（SQLite 同一连接内未隔离）
+        # 但 rollback 后应该消失
+        store._transaction_depth = 0
+        embodied_memory.db_conn.rollback()
+        obj = embodied_memory.get_world_object("deferred")
+        assert obj is None
+
+    def test_batch_add_atoms_faster_than_sequential(self, embodied_memory):
+        """批量写入应比逐条写入更快（至少快 1.2x）"""
+        import time
+
+        atoms_seq = [MemoryAtom(content=f"seq_{i}", spatial=Vec3(i, 0, 0)) for i in range(200)]
+        t0 = time.perf_counter()
+        for atom in atoms_seq:
+            embodied_memory.add_atom(atom)
+        seq_time = time.perf_counter() - t0
+
+        atoms_batch = [MemoryAtom(content=f"batch_{i}", spatial=Vec3(i, 0, 0)) for i in range(200)]
+        t0 = time.perf_counter()
+        embodied_memory.batch_add_atoms(atoms_batch)
+        batch_time = time.perf_counter() - t0
+
+        assert batch_time < seq_time * 0.85, f"batch {batch_time:.3f}s not faster than seq {seq_time:.3f}s"
